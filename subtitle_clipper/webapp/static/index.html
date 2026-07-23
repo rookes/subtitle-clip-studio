@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subtitle Clip Studio</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Subtitle Clip Studio</h1>
+    <span id="ffmpeg-warn" class="warn" hidden>ffmpeg not found — preview &amp; generate disabled</span>
+    <span class="spacer"></span>
+    <div class="settings-wrap">
+      <button type="button" id="settings-btn" class="icon-btn" title="Settings"
+              aria-haspopup="true" aria-expanded="false">⚙</button>
+      <div id="settings-menu" class="settings-menu" hidden role="menu">
+        <div class="settings-section">
+          <div class="settings-label">Subtitle root</div>
+          <div class="settings-row">
+            <input type="text" id="set-subtitle-root" placeholder="(config default)">
+            <button type="button" id="set-subtitle-browse" title="Browse for a folder">Browse…</button>
+          </div>
+          <div class="settings-hint" id="set-subtitle-hint"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Media root</div>
+          <div class="settings-row">
+            <input type="text" id="set-media-root" placeholder="(config default)">
+            <button type="button" id="set-media-browse" title="Browse for a folder">Browse…</button>
+          </div>
+          <div class="settings-hint" id="set-media-hint"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Video output</div>
+          <div class="settings-row">
+            <label>Resolution
+              <select id="set-resolution">
+                <option value="480p">480p</option>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p</option>
+              </select>
+            </label>
+            <label>Quality
+              <select id="set-quality">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button type="button" id="settings-save">Save</button>
+          <button type="button" id="settings-refresh" class="secondary"
+                  title="Rebuild search data from the subtitle directory (in memory only)">↻ Refresh subtitle data</button>
+        </div>
+        <div class="settings-status muted" id="settings-status"></div>
+      </div>
+    </div>
+  </header>
+
+  <form id="search-form">
+    <div class="row">
+      <input type="text" id="query" placeholder="Search subtitles… (e.g. 邊個)" autofocus>
+      <button type="submit" id="search-btn">Search</button>
+    </div>
+    <div class="row options">
+      <label><input type="checkbox" id="regex"> Regex</label>
+      <label><input type="checkbox" id="require-media"> Only with linked video</label>
+      <label><input type="checkbox" id="ai"> Include AI subs</label>
+    </div>
+    <div class="row options">
+      <label>Only shows <input type="text" id="only-shows" placeholder="comma,separated"></label>
+      <label>Exclude shows <input type="text" id="exclude-shows" placeholder="comma,separated"></label>
+    </div>
+  </form>
+
+  <section id="status" class="status"></section>
+
+  <div id="gen-bar" class="gen-bar" hidden>
+    <label>Pad (s) <input type="number" id="pad" value="0.5" min="0" max="10" step="0.1" class="num"></label>
+    <label>Output name <input type="text" id="out-name" value="clip.mkv" class="wide"></label>
+    <label class="burn-toggle"><input type="checkbox" id="burn-in"> Burn in subtitles</label>
+    <div id="burn-opts" class="burn-opts" hidden>
+      <label>Font
+        <input type="text" id="burn-font" list="font-suggestions" value="Arial" class="wide">
+        <datalist id="font-suggestions">
+          <option value="Arial">
+          <option value="Microsoft JhengHei">
+          <option value="Noto Sans CJK TC">
+          <option value="Noto Sans HK">
+        </datalist>
+      </label>
+      <label>Size <input type="number" id="burn-size" value="28" min="8" max="96" class="num"></label>
+      <label>Color <input type="color" id="burn-color" value="#ffffff"></label>
+      <label>Outline <input type="number" id="burn-outline" value="2" min="0" max="10" class="num"></label>
+    </div>
+    <button id="generate-btn" type="button">Generate from selected</button>
+    <span id="gen-status"></span>
+  </div>
+
+  <div id="results-bar" class="results-bar" hidden>
+    <label><input type="checkbox" id="select-page"> Select all on page</label>
+    <label><input type="checkbox" id="select-all"> Select all results</label>
+    <span id="sel-count" class="muted"></span>
+    <span class="spacer"></span>
+    <label>Per page
+      <select id="per-page">
+        <option value="10">10</option>
+        <option value="25" selected>25</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+    <button id="prev-page" type="button">‹ Prev</button>
+    <span id="page-info" class="muted"></span>
+    <button id="next-page" type="button">Next ›</button>
+  </div>
+
+  <ul id="results"></ul>
+
+  <template id="result-tpl">
+    <li class="result">
+      <div class="result-row">
+        <label class="pick"><input type="checkbox" class="include"></label>
+        <div class="meta">
+          <div class="text"></div>
+          <div class="sub">
+            <span class="show link-text" role="button" tabindex="0" title="click to re-link this series to a folder"></span> ·
+            <span class="ep"></span> · <span class="time"></span>
+            <select class="version" hidden title="choose which release/version to use"></select>
+            <span class="badge"></span>
+            <span class="edited-mark" hidden title="timing manually edited">✎ edited</span>
+          </div>
+          <div class="sub path-row">
+            <span class="path link-text" role="button" tabindex="0" title="click to choose a different video file"></span>
+          </div>
+        </div>
+        <div class="preview">
+          <button type="button" class="preview-btn">▶ Preview</button>
+          <button type="button" class="expand-btn">Edit timing ▾</button>
+          <video controls preload="none" hidden></video>
+        </div>
+      </div>
+      <div class="editor" hidden>
+        <div class="timing-row">
+          <label>Start
+            <input type="text" class="win-start" inputmode="text" placeholder="HH:MM:SS">
+            <span class="edited-dot start-dot" hidden title="manually edited">●</span>
+          </label>
+          <label>End
+            <input type="text" class="win-end" inputmode="text" placeholder="HH:MM:SS">
+            <span class="edited-dot end-dot" hidden title="manually edited">●</span>
+          </label>
+          <span class="timing-warn warn" hidden></span>
+        </div>
+        <ul class="lines"></ul>
+      </div>
+    </li>
+  </template>
+
+  <template id="line-tpl">
+    <li class="line">
+      <span class="line-time"></span>
+      <input type="text" class="line-text">
+      <button type="button" class="line-reset" hidden title="reset to original text">↺</button>
+      <button type="button" class="line-remove" title="remove this line">✕</button>
+      <span class="line-tag"></span>
+    </li>
+  </template>
+
+  <div id="browse-modal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-title" id="browse-title">Choose a file</div>
+      <div class="modal-path" id="browse-path"></div>
+      <ul id="browse-list" class="browse-list"></ul>
+      <div class="modal-actions">
+        <button type="button" id="browse-choose-dir" hidden>Use this folder</button>
+        <button type="button" id="browse-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-modal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-title" id="confirm-title"></div>
+      <div class="modal-actions">
+        <button type="button" id="confirm-yes">Yes</button>
+        <button type="button" id="confirm-no">No</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

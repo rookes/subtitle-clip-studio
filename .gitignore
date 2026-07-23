@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated clips and the CLI's last-search scratch file
+clips/
+.clipper_last_search.json
+
+# Optional scan cache
+data/

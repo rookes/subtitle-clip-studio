@@ -1,0 +1,17 @@
+# SRT <-> media pairing. The media root mirrors the subtitle tree: for each show
+# folder under your subtitle root, place the media in the same relative folder
+# under `media_root`. Episodes are matched by SxxEyy / episode number extracted
+# from media filenames; movies match the single media file in the folder.
+#
+# Per-show overrides (all optional), keyed by the show's slug:
+#   [shows."<show_slug>"]
+#   dir     = "Some Other Folder"          # relative to media_root, overrides the mirror
+#   file    = "Movie.2001.1080p.mkv"       # movies: explicit file
+#   pattern = 'S(?P<s>\d+)E(?P<e>\d+)'     # custom episode regex for odd naming
+#   variant = "BD"                         # which release variant this media matches
+
+# CHANGE ME (or set "Media root" in the app): the directory that holds your
+# video files. Leave empty to search subtitles only (no video linking).
+media_root = ""
+
+[shows]

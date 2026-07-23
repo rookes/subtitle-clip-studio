@@ -1,0 +1,78 @@
+# Subtitle corpus scanning rules. Paths are resolved relative to this file's
+# directory. Point `root` at your master subtitle directory (or set the
+# "Subtitle root" in the app / `clipper search --subtitle-root DIR`).
+#
+# Expected layout: a tree of SRT files grouped by show and season, e.g.
+#
+#   <root>/Series/Original/Show Name -- 中文名 (2003)/Season 1/Show.S01E01.BD.yue.srt
+#   <root>/Movies/Dubbed/A Movie (2001)/A Movie.2001.BD.yue.srt
+#
+# Filenames are parsed for SxxEyy / episode numbers, release source (BD/DVD/NF…)
+# and language tokens (yue/cht/chs/…). Nothing here is show-specific — adapt the
+# roots and globs below to your own library.
+
+[corpus]
+# CHANGE ME: the directory that holds your subtitles.
+root = "../subtitles"
+
+# Only these top-level trees under `root` are searched. Everything else (working
+# copies, alternate language trees, etc.) is ignored.
+include_roots = [
+    "Series/Dubbed",
+    "Series/Original",
+    "Movies/Dubbed",
+    "Movies/Original",
+]
+
+# Glob patterns matched against each SRT's path relative to `root` (forward
+# slashes). Files matching any of these are dropped from the corpus. These
+# defaults match the reference layout (drop AI-generated, English, Simplified
+# Chinese, and work-in-progress files) — edit freely for your own conventions.
+exclude_globs = [
+    "*(AI-generated)*",
+    "*/English/*",
+    "*No Canto Audio*",
+    "*Simplified - 簡體字*",
+    "*.chs.srt",
+    "*WIP*",
+    "*.en.srt",
+    "*.eng.srt",
+    "*[[]ENGLISH]*",   # fnmatch: [[] is a literal "[" — plain [ENGLISH] is a char class
+    # AI-generated / working-copy files that live INSIDE the human folders:
+    "*AIGEN*",
+    "*AI GEN*",
+    "*[[]REMOVE SPECIAL CODES]*",
+    "*[[]COMBINED]*",
+    "*/translated/*",
+    "*/Standard Chinese/*",
+]
+
+# Whole series to drop from the corpus (editorial / quality / licensing), each
+# recorded as `series_excluded: <name>`. Give each entry a `name` and at least
+# one matcher:
+#   patterns — fnmatch globs against the path relative to `root` (forward slashes)
+#   dir      — a folder: a value with "/" is a path prefix relative to `root`;
+#              a bare folder name matches anywhere in the path (case-insensitive)
+# `patterns`/`dirs` accept a single string or a list. Example (remove or edit):
+# [[corpus.exclude_series]]
+# name = "Some Show"
+# patterns = "*Some*Show*"
+
+# --- audio-track language selection ------------------------------------------
+# Which audio stream a generated clip uses, and the language tag written onto
+# the muxed subtitle track. Defaults (shown here) target Cantonese first, then
+# any Chinese track, then ffmpeg's default. Replace these lists to localize the
+# tool for a different-language corpus.
+[audio]
+primary_lang_codes = ["yue"]
+primary_title_keywords = ["cantonese"]
+fallback_lang_codes = [
+    "zh", "zho", "chi", "cmn", "nan", "hak", "wuu",
+    "zh-hans", "zh-hant", "zh-hk", "zh-tw", "zh-cn", "zh-sg",
+]
+fallback_title_keywords = [
+    "chinese", "cantonese", "mandarin", "putonghua", "guoyu", "huayu",
+    "中文", "汉语", "漢語", "华语", "華語", "国语", "國語",
+    "普通话", "普通話", "粤", "粵", "粵語", "粤语", "廣東話", "广东话",
+]
+subtitle_language_tag = "yue"

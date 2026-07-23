@@ -1,0 +1,31 @@
+[project]
+name = "subtitle-clip-studio"
+version = "0.1.0"
+description = "Search a subtitle corpus and cut the matching lines out of the linked source videos into one stitched clip with an aligned subtitle track."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+authors = [{ name = "Jon Miller" }]
+
+# The web UI needs Flask; search and clip generation otherwise use only the
+# standard library (plus ffmpeg/ffprobe on PATH for preview/generate).
+dependencies = ["flask>=3.0"]
+
+[project.scripts]
+clipper = "subtitle_clipper.__main__:cli"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = { find = { where = ["."], include = ["subtitle_clipper*"] } }
+
+[tool.setuptools.package-data]
+"subtitle_clipper.webapp" = ["static/*"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
