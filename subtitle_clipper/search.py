@@ -33,6 +33,7 @@ class Match:
     media_status: str          # video | audio_only | missing | unlinked | unknown
     source: str | None = None          # release version of the active variant (BD/DVD/NF/…)
     sync_variant_key: str = ""          # source-agnostic episode identity
+    display_name: str | None = None     # filename label (custom datasets), or None
     # Every version of this episode that matched the same line, preferred first.
     # Each is a plain dict (see _version_dict); the top-level fields above mirror
     # versions[0]. Length 1 when only one version exists for the line.
@@ -48,6 +49,8 @@ class Match:
         d["has_video"] = self.has_video
         d["versions"] = [dict(v) for v in self.versions]
         return d
+
+    # note: display_name is read from the dict in from_dict below
 
     @classmethod
     def from_dict(cls, d: dict) -> "Match":
@@ -66,6 +69,7 @@ class Match:
             media_status=d.get("media_status", "unknown"),
             source=d.get("source"),
             sync_variant_key=d.get("sync_variant_key", ""),
+            display_name=d.get("display_name"),
             versions=tuple(d.get("versions") or ()),
         )
 
@@ -132,6 +136,7 @@ def _match_of(rec: EpisodeRecord, cue: Cue, status: str,
         media_status=status,
         source=rec.source,
         sync_variant_key=rec.sync_variant_key,
+        display_name=rec.display_name,
         versions=versions,
     )
 
@@ -150,6 +155,7 @@ def _version_dict(rec: EpisodeRecord, cue: Cue, status: str) -> dict:
         "season": rec.season,
         "episodes": list(rec.episodes),
         "has_video": status == "video",
+        "display_name": rec.display_name,
     }
 
 
@@ -209,8 +215,14 @@ def search(
     only_shows: tuple[str, ...] = (),
     require_media: bool = False,
     group_versions: bool = False,
+    allow_empty: bool = False,
 ) -> list[Match]:
     """Return up to ``top`` matches in stable corpus order.
+
+    ``allow_empty`` makes an empty ``query`` match every cue (used by custom
+    datasets so an empty search lists the whole loaded source). A record whose
+    ``cue_ids`` is set restricts matching to those 0-based cue indices (the
+    SubtitleEdit-bookmarks case, where only bookmarked lines are searchable).
 
     ``require_media`` keeps only matches whose linked media has a video stream
     (missing / audio-only / unlinked are dropped).
@@ -222,9 +234,10 @@ def search(
     season folders), so it is off by default for the CLI's fast top-N path.
     """
     if not query:
-        return []
-
-    if regex:
+        if not allow_empty:
+            return []
+        predicate = lambda text: True  # noqa: E731  (list the whole dataset)
+    elif regex:
         pattern = re.compile(query)
         predicate = lambda text: pattern.search(text) is not None  # noqa: E731
     else:
@@ -242,7 +255,10 @@ def search(
             status = media_status(rec, corpus.media_root)
             if require_media and status != "video":
                 continue
+            allowed = set(rec.cue_ids) if rec.cue_ids is not None else None
             for cue in _cued(corpus.srt_abspath(rec)):
+                if allowed is not None and cue.index not in allowed:
+                    continue
                 if predicate(cue.text):
                     results.append(_match_of(rec, cue, status))
                     if len(results) >= top:
@@ -258,7 +274,10 @@ def search(
         status = media_status(rec, corpus.media_root)
         if require_media and status != "video":
             continue
+        allowed = set(rec.cue_ids) if rec.cue_ids is not None else None
         for cue in _cued(corpus.srt_abspath(rec)):
+            if allowed is not None and cue.index not in allowed:
+                continue
             if not predicate(cue.text):
                 continue
             key = rec.sync_variant_key

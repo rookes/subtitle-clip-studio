@@ -30,16 +30,18 @@ class SkippedMatch:
 
 @dataclass
 class Report:
-    output: Path | None
-    srt: Path | None
+    output: Path | None                              # first (or only) video
+    srt: Path | None                                 # its sidecar
     included: list[Match] = field(default_factory=list)
     skipped: list[SkippedMatch] = field(default_factory=list)
+    outputs: list[Path] = field(default_factory=list)  # every video written
+    srts: list[Path] = field(default_factory=list)     # matching sidecars
 
     def summary(self) -> str:
         lines = [f"Generated {len(self.included)} clip(s)"]
-        if self.output:
-            lines.append(f"  video: {self.output}")
-            lines.append(f"  subs:  {self.srt}")
+        for out, srt in zip(self.outputs, self.srts):
+            lines.append(f"  video: {out}")
+            lines.append(f"  subs:  {srt}")
         for s in self.skipped:
             lines.append(f"  skipped {s.label}: {s.reason}")
         return "\n".join(lines)
@@ -136,6 +138,7 @@ def generate(
     spec: NormSpec | None = None,
     records_by_id: dict | None = None,
     burn_in: BurnStyle | None = None,
+    separate: bool = False,
 ) -> Report:
     """Cut, stitch and subtitle the given items into ``out_path`` (MKV).
 
@@ -144,6 +147,10 @@ def generate(
     ``media_root``. When omitted, ``match.media_path`` is joined to media_root
     directly. ``burn_in``, when set, hardcodes the subtitles into the frame
     instead of muxing them as a soft track.
+
+    ``separate`` writes one MKV (+ ``.srt`` sidecar) per clip — named
+    ``{stem}-{n:02d}.mkv`` beside ``out_path`` — instead of concatenating every
+    clip into the single ``out_path``.
     """
     spec = spec or NormSpec()
     out_path = Path(out_path)
@@ -165,8 +172,7 @@ def generate(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clipper_") as tmp:
         work = Path(tmp)
-        segment_files: list[Path] = []
-        segment_plans: list[SegmentPlan] = []
+        segments: list[tuple[SegmentPlan, Path]] = []
         for idx, (item, src) in enumerate(plan):
             m = item.match
             win_start = item.win_start if item.win_start is not None else max(0.0, m.start - pad_s)
@@ -174,31 +180,52 @@ def generate(
             seg_file = work / f"seg{idx:04d}.mkv"
             cut_segment(src, win_start, win_end, seg_file,
                         audio_track=_select_audio_track(src), spec=spec)
-            segment_files.append(seg_file)
             cues = sorted(
                 [CueEntry(m.start, m.end, m.text), *item.extra_cues],
                 key=lambda c: c.start,
             )
-            segment_plans.append(SegmentPlan(win_start, win_end, cues))
+            segments.append((SegmentPlan(win_start, win_end, cues), seg_file))
             report.included.append(m)
 
-        srt_text, _ = build_combined_srt(segment_plans)
-        combined_srt = work / "combined.srt"
-        combined_srt.write_text(srt_text, encoding="utf-8")
-
-        stitched = work / "stitched.mkv"
-        concat(segment_files, stitched, work_dir=work)
-        if burn_in is not None:
-            burn_subtitles(stitched, combined_srt, out_path, style=burn_in, crf=spec.crf)
+        if separate:
+            width = max(2, len(str(len(segments))))
+            for n, (seg_plan, seg_file) in enumerate(segments, start=1):
+                dest = out_path.with_name(f"{out_path.stem}-{n:0{width}d}{out_path.suffix}")
+                out, sidecar = _finalize([seg_file], [seg_plan], dest, work, burn_in, spec)
+                report.outputs.append(out)
+                report.srts.append(sidecar)
         else:
-            mux_subtitles(stitched, combined_srt, out_path,
-                          language=audio.subtitle_language_tag())
+            out, sidecar = _finalize([f for _, f in segments], [p for p, _ in segments],
+                                     out_path, work, burn_in, spec)
+            report.outputs.append(out)
+            report.srts.append(sidecar)
+
+    if report.outputs:
+        report.output = report.outputs[0]
+        report.srt = report.srts[0]
+    return report
+
+
+def _finalize(segment_files: list[Path], segment_plans: list[SegmentPlan],
+              out_path: Path, work: Path, burn_in: BurnStyle | None,
+              spec: NormSpec) -> tuple[Path, Path]:
+    """Concat the given segments, build their combined SRT, mux/burn it in, and
+    write ``out_path`` plus a matching ``.srt`` sidecar. Returns ``(video, srt)``."""
+    srt_text, _ = build_combined_srt(segment_plans)
+    combined_srt = work / (out_path.stem + ".srt")
+    combined_srt.write_text(srt_text, encoding="utf-8")
+
+    stitched = work / (out_path.stem + ".stitched.mkv")
+    concat(segment_files, stitched, work_dir=work)
+    if burn_in is not None:
+        burn_subtitles(stitched, combined_srt, out_path, style=burn_in, crf=spec.crf)
+    else:
+        mux_subtitles(stitched, combined_srt, out_path,
+                      language=audio.subtitle_language_tag())
 
     sidecar = out_path.with_suffix(".srt")
     sidecar.write_text(srt_text, encoding="utf-8")
-    report.output = out_path
-    report.srt = sidecar
-    return report
+    return out_path, sidecar
 
 
 def media_status_for(src: Path) -> str:

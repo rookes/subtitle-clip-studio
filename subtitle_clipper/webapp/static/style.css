@@ -74,7 +74,22 @@ button.secondary:hover { background: var(--panel-2); filter: brightness(1.25); }
 .settings-status { font-size: 0.82rem; min-height: 1rem; }
 
 form, .status, .gen-bar, #results { padding: 0; }
-form { margin-top: 1rem; }
+form { margin-top: 0.6rem; }
+
+/* --- custom dataset bar --- */
+.dataset-bar {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+  margin-top: 1rem; padding: 0.5rem 0.75rem; font-size: 0.9rem;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+}
+.dataset-label { color: var(--muted); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+#dataset-current { font-weight: 600; }
+.dataset-load { display: inline-flex; gap: 0.4rem; flex-wrap: wrap; }
+.dataset-bar button { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+#dataset-status { font-size: 0.82rem; }
+
+/* filename-only rows (custom single-file/bookmarks datasets) */
+.result .sub .show.filename { color: var(--text); text-decoration: none; cursor: default; }
 
 .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.6rem; }
 .row.options { font-size: 0.9rem; color: var(--muted); }

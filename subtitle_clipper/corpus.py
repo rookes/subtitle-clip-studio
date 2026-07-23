@@ -149,14 +149,18 @@ def media_status(rec: EpisodeRecord, media_root: Path | None) -> str:
 
 # --- server-side file browsing (backs the web UI's "choose a file/directory") -
 
-def list_dir(path: Path, *, videos_only: bool = False) -> list[dict]:
+def list_dir(path: Path, *, videos_only: bool = False,
+             exts: tuple[str, ...] | None = None) -> list[dict]:
     """List one directory's contents for the browse modal.
 
-    Directories always come first (alphabetical), then files (alphabetical),
-    filtered to ``VIDEO_EXTENSIONS`` when ``videos_only``. A ``..`` entry is
-    included unless ``path`` is a filesystem root. This is a local, single-user
-    tool bound to 127.0.0.1 by default, so browsing is not path-restricted —
-    the same trust boundary as the existing arbitrary-file download route.
+    Directories always come first (alphabetical), then files (alphabetical).
+    ``videos_only`` keeps only ``VIDEO_EXTENSIONS``; ``exts`` (lowercase suffix
+    strings like ``".srt"`` or ``".bookmarks"``) keeps only files whose name
+    ends with one of them — used when picking a subtitle or bookmarks file. A
+    ``..`` entry is included unless ``path`` is a filesystem root. This is a
+    local, single-user tool bound to 127.0.0.1 by default, so browsing is not
+    path-restricted — the same trust boundary as the existing arbitrary-file
+    download route.
     """
     path = Path(path)
     entries: list[dict] = []
@@ -173,6 +177,9 @@ def list_dir(path: Path, *, videos_only: bool = False) -> list[dict]:
     files = [p for p in children if p.is_file()]
     if videos_only:
         files = [p for p in files if p.suffix.lower() in VIDEO_EXTENSIONS]
+    if exts:
+        low = tuple(e.lower() for e in exts)
+        files = [p for p in files if p.name.lower().endswith(low)]
 
     for p in dirs:
         entries.append({"name": p.name, "path": str(p), "is_dir": True})

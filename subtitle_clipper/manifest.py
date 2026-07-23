@@ -85,6 +85,9 @@ class EpisodeRecord:
     media_path: str | None = None    # relative to media root
     media_flags: list[str] = field(default_factory=list)
     exclusion: str | None = None     # None = included
+    # Custom-dataset extras (unused by the master corpus scan):
+    display_name: str | None = None  # filename to show instead of show/episode
+    cue_ids: list[int] | None = None  # 0-based Cue.index allow-list (bookmarks)
 
 
 @dataclass

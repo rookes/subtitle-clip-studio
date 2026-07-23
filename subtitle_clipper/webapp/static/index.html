@@ -61,6 +61,18 @@
     </div>
   </header>
 
+  <div id="dataset-bar" class="dataset-bar">
+    <span class="dataset-label">Dataset:</span>
+    <span id="dataset-current">Master</span>
+    <span id="dataset-load" class="dataset-load">
+      <button type="button" id="ds-srt" class="secondary" title="Load a single SRT file">Single SRT…</button>
+      <button type="button" id="ds-dir" class="secondary" title="Load a directory of SRTs">Directory…</button>
+      <button type="button" id="ds-bookmarks" class="secondary" title="Load a SubtitleEdit .SE.bookmarks file">Bookmarks…</button>
+    </span>
+    <button type="button" id="ds-back" class="secondary" hidden>← Back to master dataset</button>
+    <span id="dataset-status" class="muted"></span>
+  </div>
+
   <form id="search-form">
     <div class="row">
       <input type="text" id="query" placeholder="Search subtitles… (e.g. 邊個)" autofocus>
@@ -82,6 +94,7 @@
   <div id="gen-bar" class="gen-bar" hidden>
     <label>Pad (s) <input type="number" id="pad" value="0.5" min="0" max="10" step="0.1" class="num"></label>
     <label>Output name <input type="text" id="out-name" value="clip.mkv" class="wide"></label>
+    <label class="sep-toggle"><input type="checkbox" id="separate-files"> One file per clip</label>
     <label class="burn-toggle"><input type="checkbox" id="burn-in"> Burn in subtitles</label>
     <div id="burn-opts" class="burn-opts" hidden>
       <label>Font
@@ -128,8 +141,8 @@
         <div class="meta">
           <div class="text"></div>
           <div class="sub">
-            <span class="show link-text" role="button" tabindex="0" title="click to re-link this series to a folder"></span> ·
-            <span class="ep"></span> · <span class="time"></span>
+            <span class="show link-text" role="button" tabindex="0" title="click to re-link this series to a folder"></span><span
+              class="sep sep-ep"> · </span><span class="ep"></span><span class="sep sep-time"> · </span><span class="time"></span>
             <select class="version" hidden title="choose which release/version to use"></select>
             <span class="badge"></span>
             <span class="edited-mark" hidden title="timing manually edited">✎ edited</span>

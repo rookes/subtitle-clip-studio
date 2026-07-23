@@ -58,6 +58,22 @@ Results with a linked video are listed **first**. Matches are **paginated**
 "Select all results" toggles every selectable row across all pages. The
 searched text is highlighted in each result line.
 
+**Custom datasets** (dataset bar, above the search box): temporarily narrow the
+app to an ad-hoc source instead of the master corpus, then click **← Back to
+master dataset** to return. Three sources are supported:
+
+- **Single SRT** — only that file's lines are searched; an **empty search lists
+  every line**, and each row is labelled by the **filename** (not show/episode).
+  You can still link a video and generate clips as usual.
+- **Directory** — a folder of SRTs (non-recursive). Files whose names match a
+  show in the master corpus keep their show + season/episode label (and reuse
+  that show's linked media); files that don't match fall back to their filename.
+- **Bookmarks** — a SubtitleEdit `X.srt.SE.bookmarks` file. Only the bookmarked
+  lines of the paired `X.srt` (matched by the SRT's printed line numbers) are
+  loaded. The `.srt` must sit next to the `.bookmarks` file.
+
+Files are picked with the built-in browser and can live anywhere on the machine.
+
 **Settings** (⚙): set the **Subtitle root** (master subtitle directory) and
 **Media root** without editing config files, choose the output resolution /
 quality, and **Refresh subtitle data** to re-index after changing files. Roots
@@ -100,6 +116,11 @@ into both the subtitle track and the `.srt` sidecar.
 soft `.srt` track to hardcoding the subtitles into the frame (font/size/color/
 outline configurable). When burn-in is on, inline previews show the subtitles too
 (rendered as a styled WebVTT track over the `<video>`).
+
+**One file per clip**: the gen-bar's "One file per clip" checkbox (off by
+default) writes a separate MKV (+ `.srt` sidecar) for each selected result
+instead of stitching them together, and hands them back bundled in a single
+`.zip` download.
 
 ## CLI
 

@@ -316,6 +316,8 @@ function buildRow(node, i) {
     li,
     include: node.querySelector(".include"),
     textEl: node.querySelector(".text"),
+    epEl: node.querySelector(".ep"),
+    epSep: node.querySelector(".sep-ep"),
     timeEl: node.querySelector(".time"),
     versionSel: node.querySelector(".version"),
     badge: node.querySelector(".badge"),
@@ -335,9 +337,23 @@ function buildRow(node, i) {
   };
   rowRefs[i] = refs;
 
-  refs.showBtn.textContent = m.show_title;
-  refs.showBtn.addEventListener("click", () => { if (!isSelectingText()) onShowClick(i); });
-  refs.showBtn.addEventListener("keydown", (e) => { if (e.key === "Enter") onShowClick(i); });
+  // Custom single-file / bookmarks datasets label a row by its filename instead
+  // of show + episode: show the filename, drop the episode span, and make the
+  // label a plain (non-relink) text node.
+  if (m.display_name) {
+    refs.showBtn.textContent = m.display_name;
+    refs.showBtn.classList.remove("link-text");
+    refs.showBtn.classList.add("filename");
+    refs.showBtn.removeAttribute("role");
+    refs.showBtn.removeAttribute("tabindex");
+    refs.showBtn.title = "";
+    refs.epEl.hidden = true;
+    refs.epSep.hidden = true;
+  } else {
+    refs.showBtn.textContent = m.show_title;
+    refs.showBtn.addEventListener("click", () => { if (!isSelectingText()) onShowClick(i); });
+    refs.showBtn.addEventListener("keydown", (e) => { if (e.key === "Enter") onShowClick(i); });
+  }
   refs.pathBtn.addEventListener("click", () => { if (!isSelectingText()) onPathClick(i); });
   refs.pathBtn.addEventListener("keydown", (e) => { if (e.key === "Enter") onPathClick(i); });
 
@@ -865,17 +881,21 @@ function onShowClick(i) {
 
 let browseState = null;
 
-function openBrowse({ mode, onChoose }) {
-  browseState = { mode, path: "", onChoose };
-  $("browse-title").textContent = mode === "dir" ? "Choose a folder" : "Choose a video file";
+function openBrowse({ mode, onChoose, exts, title }) {
+  browseState = { mode, path: "", onChoose, exts: exts || null };
+  $("browse-title").textContent = title || (mode === "dir" ? "Choose a folder" : "Choose a video file");
   $("browse-choose-dir").hidden = mode !== "dir";
   $("browse-modal").hidden = false;
   browseLoad("");
 }
 
 async function browseLoad(path) {
-  const videosOnly = browseState.mode === "file";
-  const params = new URLSearchParams({ videos_only: videosOnly ? "1" : "0" });
+  const params = new URLSearchParams();
+  if (browseState.exts) {
+    params.set("exts", browseState.exts.join(","));   // filter files by suffix
+  } else {
+    params.set("videos_only", browseState.mode === "file" ? "1" : "0");
+  }
   if (path) params.set("path", path);
   const r = await fetch(`/api/browse?${params.toString()}`);
   const data = await r.json();
@@ -1001,6 +1021,7 @@ async function runGenerate() {
       matches: indices.map((i) => buildPayload(i)),
       pad: currentPad(),
       name: $("out-name").value,
+      separate: $("separate-files").checked,
     };
     if ($("burn-in").checked) {
       body.burn_in = {
@@ -1147,6 +1168,71 @@ $("set-media-browse").addEventListener("click", () => {
 $("settings-save").addEventListener("click", saveSettings);
 $("settings-refresh").addEventListener("click", refreshSubtitleData);
 loadSettings();
+
+// --- custom dataset bar -----------------------------------------------------
+
+function renderDatasetBar(info) {
+  const active = !!(info && info.active);
+  $("dataset-current").textContent = active
+    ? `Custom — ${info.label || ""}`
+    : "Master";
+  $("dataset-load").hidden = active;
+  $("ds-back").hidden = !active;
+}
+
+async function loadDatasetInfo() {
+  try {
+    const r = await fetch("/api/dataset");
+    renderDatasetBar(await r.json());
+  } catch { /* leave the default (Master) bar */ }
+}
+
+async function setDataset(mode, path) {
+  $("dataset-status").textContent = "Loading…";
+  try {
+    const r = await fetch("/api/dataset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, path }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || "could not load dataset");
+    renderDatasetBar({ active: true, label: d.label, count: d.count });
+    $("dataset-status").textContent = `${d.count} entr${d.count === 1 ? "y" : "ies"} loaded.`;
+    // Session links from the master corpus don't apply to a custom dataset.
+    rememberedVideo = {};
+    rememberedSeriesDir = {};
+    $("search-form").requestSubmit();   // empty query lists the whole dataset
+  } catch (e) {
+    $("dataset-status").textContent = e.message;
+  }
+}
+
+async function backToMaster() {
+  $("dataset-status").textContent = "";
+  try {
+    await fetch("/api/dataset/master", { method: "POST" });
+  } catch { /* ignore */ }
+  renderDatasetBar({ active: false });
+  rememberedVideo = {};
+  rememberedSeriesDir = {};
+  $("search-form").requestSubmit();
+}
+
+$("ds-srt").addEventListener("click", () => openBrowse({
+  mode: "file", exts: [".srt"], title: "Choose an SRT file",
+  onChoose: (p) => setDataset("srt", p),
+}));
+$("ds-dir").addEventListener("click", () => openBrowse({
+  mode: "dir", title: "Choose a folder of SRTs",
+  onChoose: (p) => setDataset("dir", p),
+}));
+$("ds-bookmarks").addEventListener("click", () => openBrowse({
+  mode: "file", exts: [".bookmarks"], title: "Choose a .SE.bookmarks file",
+  onChoose: (p) => setDataset("bookmarks", p),
+}));
+$("ds-back").addEventListener("click", backToMaster);
+loadDatasetInfo();
 
 // --- wiring -----------------------------------------------------------------
 

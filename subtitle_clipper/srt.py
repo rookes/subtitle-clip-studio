@@ -26,6 +26,7 @@ class Cue:
     end: float
     raw: str            # text exactly as read (lines joined with \n)
     text: str           # entity-unescaped, control-stripped
+    number: int | None = None  # printed SRT sequence counter, when present
 
 
 class SrtParseError(ValueError):
@@ -63,7 +64,15 @@ def parse_srt(path: Path) -> list[Cue]:
         cleaned = _RE_INVISIBLE.sub("", html.unescape(raw)).strip()
         if not cleaned:
             return
-        cues.append(Cue(index=len(cues), start=start, end=end, raw=raw, text=cleaned))
+        # The line directly above the timing line is the SRT sequence counter
+        # when it's a bare integer (SubtitleEdit bookmarks reference this number).
+        number = None
+        if timing_i > 0:
+            prev = block[timing_i - 1].strip()
+            if prev.isdigit():
+                number = int(prev)
+        cues.append(Cue(index=len(cues), start=start, end=end, raw=raw,
+                        text=cleaned, number=number))
 
     for line in text.split("\n"):
         if line.strip() == "":
