@@ -58,6 +58,88 @@ function parseClock(str) {
   return sec;
 }
 
+// The timing fields behave like a fixed "00:00:00.000" template edited with
+// Insert (overtype) always on: the separators never move, only the nine digit
+// slots change. Typing a digit overwrites the slot under the caret and steps to
+// the next; Backspace/Delete reset a slot to 0; non-digits are ignored.
+const CLOCK_TEMPLATE = "00:00:00.000";
+const CLOCK_DIGIT_SLOTS = [0, 1, 3, 4, 6, 7, 9, 10, 11]; // char positions of digits
+
+// Coerce any string into the strict template, keeping its digits in order.
+function normalizeClock(value) {
+  const digits = String(value).match(/\d/g) || [];
+  const out = CLOCK_TEMPLATE.split("");
+  CLOCK_DIGIT_SLOTS.forEach((slot, k) => {
+    if (digits[k] != null) out[slot] = digits[k];
+  });
+  return out.join("");
+}
+
+// Index into CLOCK_DIGIT_SLOTS of the first digit slot at or after `pos`.
+function clockSlotAtOrAfter(pos) {
+  const k = CLOCK_DIGIT_SLOTS.findIndex((slot) => slot >= pos);
+  return k === -1 ? CLOCK_DIGIT_SLOTS.length : k;
+}
+
+function ensureClockTemplate(input) {
+  if (input.value !== normalizeClock(input.value)) {
+    input.value = normalizeClock(input.value);
+  }
+}
+
+function onClockKeydown(e, input) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // leave shortcuts alone
+  if (["ArrowLeft", "ArrowRight", "Home", "End", "Tab"].includes(e.key)) return;
+
+  // Enter commits the same way blurring does. Because we mutate the field's
+  // value programmatically below, the browser never flags it user-dirty, so the
+  // native "change" event won't fire — the caller commits on blur instead (see
+  // the dataset.dirty flag we set on every mutation here).
+  if (e.key === "Enter") { e.preventDefault(); input.blur(); return; }
+
+  const chars = normalizeClock(input.value).split("");
+  const pos = input.selectionStart ?? 0;
+
+  if (/^\d$/.test(e.key)) {
+    e.preventDefault();
+    let k = clockSlotAtOrAfter(pos);
+    if (k >= CLOCK_DIGIT_SLOTS.length) k = CLOCK_DIGIT_SLOTS.length - 1; // clamp at last
+    chars[CLOCK_DIGIT_SLOTS[k]] = e.key;
+    input.value = chars.join("");
+    input.dataset.dirty = "1";
+    const next = k + 1 < CLOCK_DIGIT_SLOTS.length
+      ? CLOCK_DIGIT_SLOTS[k + 1] : CLOCK_DIGIT_SLOTS[k] + 1;
+    input.setSelectionRange(next, next);
+    return;
+  }
+
+  if (e.key === "Backspace") {
+    e.preventDefault();
+    const k = clockSlotAtOrAfter(pos) - 1; // slot just before the caret
+    if (k < 0) { input.setSelectionRange(0, 0); return; }
+    const slot = CLOCK_DIGIT_SLOTS[k];
+    chars[slot] = "0";
+    input.value = chars.join("");
+    input.dataset.dirty = "1";
+    input.setSelectionRange(slot, slot);
+    return;
+  }
+
+  if (e.key === "Delete") {
+    e.preventDefault();
+    const k = clockSlotAtOrAfter(pos);
+    if (k >= CLOCK_DIGIT_SLOTS.length) return;
+    const slot = CLOCK_DIGIT_SLOTS[k];
+    chars[slot] = "0";
+    input.value = chars.join("");
+    input.dataset.dirty = "1";
+    input.setSelectionRange(slot, slot);
+    return;
+  }
+
+  if (e.key.length === 1) e.preventDefault(); // block any other printable char
+}
+
 // --- misc helpers -----------------------------------------------------------
 
 function csv(id) {
@@ -367,8 +449,21 @@ function buildRow(node, i) {
   });
   refs.previewBtn.addEventListener("click", () => onPreviewClick(i));
   refs.expandBtn.addEventListener("click", () => toggleExpand(i));
-  refs.winStartInput.addEventListener("change", () => onWinInput(i, "start"));
-  refs.winEndInput.addEventListener("change", () => onWinInput(i, "end"));
+  for (const [inp, which] of [[refs.winStartInput, "start"], [refs.winEndInput, "end"]]) {
+    inp.addEventListener("keydown", (e) => onClockKeydown(e, inp));
+    inp.addEventListener("focus", () => ensureClockTemplate(inp));
+    // Paste/autofill go through the input event, not our keydown handler; keep
+    // the strict template and mark the field dirty so blur commits the change.
+    inp.addEventListener("input", () => { ensureClockTemplate(inp); inp.dataset.dirty = "1"; });
+    // We mutate the value in JS, so the native "change" never fires — commit on
+    // blur, but only when the user actually edited the field.
+    inp.addEventListener("blur", () => {
+      if (inp.dataset.dirty) { delete inp.dataset.dirty; onWinInput(i, which); }
+    });
+    const label = inp.closest("label");
+    label.querySelector(".nudge-up").addEventListener("click", () => nudgeWin(i, which, 1));
+    label.querySelector(".nudge-down").addEventListener("click", () => nudgeWin(i, which, -1));
+  }
 
   refs.timeEl.textContent = fmtTime(activeVersion(i).start);
   renderHeaderText(i);
@@ -786,6 +881,17 @@ function onWinInput(i, which) {
   renderTiming(i);
   refs.warnEl.hidden = !warn;
   refs.warnEl.textContent = warn;
+}
+
+// Nudge a window edge by `delta` seconds, then run it through onWinInput so the
+// same clamping / re-inclusion / render happens as a manual edit.
+function nudgeWin(i, which, delta) {
+  const refs = rowRefs[i];
+  const state = itemState[i];
+  const input = which === "start" ? refs.winStartInput : refs.winEndInput;
+  const base = which === "start" ? state.winStart : state.winEnd;
+  input.value = fmtClock(Math.max(0, base + delta));
+  onWinInput(i, which);
 }
 
 function onExtraRemove(i, cueIndex) {

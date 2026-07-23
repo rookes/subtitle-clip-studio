@@ -228,6 +228,13 @@ mark {
 .timing-row { display: flex; flex-wrap: wrap; align-items: center; gap: 1.25rem; font-size: 0.9rem; }
 .timing-row label { display: inline-flex; align-items: center; gap: 0.4rem; }
 .timing-row input[type=text] { width: 9rem; font-variant-numeric: tabular-nums; }
+.nudge { display: inline-flex; flex-direction: column; gap: 1px; }
+.nudge button {
+  background: var(--panel-2); color: var(--text);
+  padding: 0; width: 1.4rem; height: 0.85rem;
+  border-radius: 3px; font-size: 0.5rem; line-height: 1;
+}
+.nudge button:hover { background: var(--panel-2); filter: brightness(1.3); }
 .edited-dot { color: var(--accent); font-size: 0.6rem; }
 .timing-warn { font-size: 0.82rem; }
 

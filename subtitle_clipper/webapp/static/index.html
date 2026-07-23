@@ -160,11 +160,19 @@
       <div class="editor" hidden>
         <div class="timing-row">
           <label>Start
-            <input type="text" class="win-start" inputmode="text" placeholder="HH:MM:SS">
+            <input type="text" class="win-start" inputmode="numeric" placeholder="00:00:00.000">
+            <span class="nudge">
+              <button type="button" class="nudge-up" tabindex="-1" title="+1 second">▲</button>
+              <button type="button" class="nudge-down" tabindex="-1" title="−1 second">▼</button>
+            </span>
             <span class="edited-dot start-dot" hidden title="manually edited">●</span>
           </label>
           <label>End
-            <input type="text" class="win-end" inputmode="text" placeholder="HH:MM:SS">
+            <input type="text" class="win-end" inputmode="numeric" placeholder="00:00:00.000">
+            <span class="nudge">
+              <button type="button" class="nudge-up" tabindex="-1" title="+1 second">▲</button>
+              <button type="button" class="nudge-down" tabindex="-1" title="−1 second">▼</button>
+            </span>
             <span class="edited-dot end-dot" hidden title="manually edited">●</span>
           </label>
           <span class="timing-warn warn" hidden></span>
