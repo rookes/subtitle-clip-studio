@@ -88,3 +88,50 @@ def test_match_videos_ambiguous_without_version_hint_is_none(tmp_path):
     mapping = match_videos_in_directory(
         [{"episode_id": "e1", "season": 1, "episodes": [1]}], tmp_path)
     assert mapping["e1"] is None
+
+
+# --- combined season+episode codes (Avatar's 101.mkv -> S1E1) ----------------
+
+def _touch(*paths):
+    for p in paths:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+
+
+def test_relinker_matches_combined_codes(tmp_path):
+    # Avatar-style: S1/101.mkv should link to S1E1, S1E2, ...
+    s1 = tmp_path / "S1"
+    _touch(s1 / "101.mkv", s1 / "102.mkv")
+    items = [
+        {"episode_id": "avatar_s01e01", "season": 1, "episodes": [1]},
+        {"episode_id": "avatar_s01e02", "season": 1, "episodes": [2]},
+    ]
+    mapping = match_videos_in_directory(items, tmp_path)
+    assert mapping["avatar_s01e01"].endswith("101.mkv")
+    assert mapping["avatar_s01e02"].endswith("102.mkv")
+
+
+def test_relinker_combined_only_when_season_unmatched(tmp_path):
+    # Season 1 already matches normally (S01E01) -> 102.mkv must NOT be reread
+    # as S1E2; the combined fallback is suppressed for a season that matched.
+    _touch(tmp_path / "Show.S01E01.mkv", tmp_path / "102.mkv")
+    items = [
+        {"episode_id": "e1", "season": 1, "episodes": [1]},
+        {"episode_id": "e2", "season": 1, "episodes": [2]},
+    ]
+    mapping = match_videos_in_directory(items, tmp_path)
+    assert mapping["e1"].endswith("Show.S01E01.mkv")
+    assert mapping["e2"] is None
+
+
+def test_relinker_no_combined_when_zero_padded(tmp_path):
+    # 001.mkv present -> plain 3-digit numbering: episode 1 is 001.mkv, and 101
+    # is episode 101 (never reread as S1E1).
+    _touch(tmp_path / "001.mkv", tmp_path / "101.mkv")
+    items = [
+        {"episode_id": "e1", "season": 1, "episodes": [1]},
+        {"episode_id": "e101", "season": 1, "episodes": [101]},
+    ]
+    mapping = match_videos_in_directory(items, tmp_path)
+    assert mapping["e1"].endswith("001.mkv")
+    assert mapping["e101"].endswith("101.mkv")

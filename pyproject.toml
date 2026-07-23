@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Search a subtitle corpus and cut the matching lines out of the linked source videos into one stitched clip with an aligned subtitle track."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "GPL-3.0-only"
+license = "MIT"
 authors = [{ name = "Jon Miller" }]
 
 # The web UI needs Flask; search and clip generation otherwise use only the
