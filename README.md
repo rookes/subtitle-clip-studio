@@ -1,32 +1,30 @@
 # Subtitle Clip Studio
 
-Search a pile of subtitle files for a word or phrase, tick the lines you like, and
-get back a single video clip that stitches those exact moments together — with the
-subtitles baked in or muxed alongside.
+Search a collection of subtitle files (.SRT) for a word or phrase, select your preferred lines, and
+get back a single video clip that stitches them together. You'll need to bring your own video files,
+of course.
 
-<!-- demo GIF goes here -->
+https://github.com/user-attachments/assets/0a4e2606-e91b-44fd-bcec-83e1f44cc103
 
-It runs as a small web app on your own machine. Your subtitle and video folders are
-only ever **read**; finished clips are written to a separate `clips/` folder.
+> Note: This tool was built to clip subtitles from the [CantoCaptions](https://cantocaptions.com)
+> Cantonese subtitle library, so it may require some configuration tweaking to use for other 
+> subtitles. You can manage these configurations by updating the TOML files in the `config` folder.
+> Default CantoCaptions configuration includes: 
+> 
+> * Cantonese audio tracks are selected automatically when a video has multiple.
+> * Show names, season and episode numbers are identified automatically when the
+>  folder structure matches the CantoCaptions dataset.
+> * Non-Cantonese subtitles and other subtitles marked as AI, WIP, etc. are excluded (see exclusions
+>  in `config/corpus.toml` under `exclude_globs`.
 
-## Why it exists
+## Features
 
-This was built to make clips from the [CantoCaptions](https://cantocaptions.com)
-Cantonese subtitle library — search for a word, and instantly see (and export) every
-scene where a real person actually says it. It still ships tuned for that use case:
-generated clips prefer the Cantonese audio track when a video has several. But
-nothing is hard-coded, so any subtitle library organized by show / season / episode
-works just as well.
-
-## A few nice things it does
-
-- Preview every matching line inline before you commit to a clip.
-- Nudge each cut's start and end so lines aren't chopped off mid-sentence.
-- Edit subtitle text inline — your edits go into the exported clip.
-- Burn subtitles into the picture, or keep them as a switchable track.
+- Make custom edits on subtitle text and start/end time for each clip 
+- Clip video preview in-browser
+- Burn subtitles into the video or embed them as a separate track.
 - Export one stitched video, or one file per line as a zip.
-- Search a single SRT, a loose folder of SRTs, or your SubtitleEdit bookmarks
-  instead of the whole library.
+- Load a directory of SRT files, a single SRT file, or a SubtitleEdit bookmarks file (.SE.bookmarks) to
+  be clipped.
 
 ## Quickstart
 
@@ -47,15 +45,17 @@ pip install -e .
 clipper serve
 ```
 
-Your browser opens to `http://127.0.0.1:8765`.
+This command runs the app server on your machine and opens a browser to `http://127.0.0.1:8765`. 
+See more options with `clipper server --help`.
 
 **4. Tell it where your files are.** This part is required — open the **⚙ settings**
 menu in the app and set:
 
-- **Subtitle root** — the folder holding your subtitle (`.srt`) files.
-- **Media root** — the folder holding the matching videos. Its folders should
-  mirror the subtitle folders; episodes are paired up by their `S01E02`-style
-  numbering. Leave it empty if you only want to search text.
+- **Subtitle root** — the folder holding your subtitle (`.srt`) files. For CantoCaptions, set this to
+  the `CantoCaptions/Subtitle` directory.
+- **Media root** — the folder holding the matching videos. If the media root's folders
+  mirror the subtitle folders, then videos will be automatically linked for clipping. Otherwise,
+  you'll need to manually select your video location each time.
 
 **5. Search, tick the lines you want, and hit "Generate from selected."** The clip
 and a matching `.srt` land in `clips/` with a download link.
@@ -82,7 +82,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests need no ffmpeg and no media files.
+Tests don't need ffmpeg or media files.
 
 ## License
 
