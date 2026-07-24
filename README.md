@@ -43,21 +43,16 @@ git clone https://github.com/rookes/subtitle-clip-studio.git
 cd subtitle-clip-studio
 ```
 
-#### 3. Install
+#### 3. Install & Run
 
 ```bash
 pip install -e .
-```
-
-#### 4. Run
-
-```bash
 clipper serve
 ```
 
-This command will run the app server on your local machine and open a browser to `http://127.0.0.1:8765`. 
+This will run the app server on your local machine and open a browser to `http://127.0.0.1:8765`. 
 
-#### 5. Configure
+#### 4. Configure
 
 Open the **⚙ settings** menu in the app and set:
 
@@ -67,7 +62,9 @@ Open the **⚙ settings** menu in the app and set:
   mirror the subtitle folders, then videos will be automatically linked for clipping. Otherwise,
   you'll need to manually select your video location each time.
 
-#### 6. Search, Select, and Generate
+  Make sure to hit "Save" and click to refresh the database after you update the root directory.
+
+#### 5. Search, Select, and Generate
 
 Now you can search for text that matches any SRT in your collection. Once you run a search, all lines
 will display by default, even if there isn't any matching video. You may need manually select the media 
