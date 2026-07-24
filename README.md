@@ -55,8 +55,7 @@ pip install -e .
 clipper serve
 ```
 
-This command runs the app server on your machine and opens a browser to `http://127.0.0.1:8765`. 
-See more options with `clipper server --help`.
+This command will run the app server on your local machine and open a browser to `http://127.0.0.1:8765`. 
 
 #### 5. Configure
 
