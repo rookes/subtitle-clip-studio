@@ -6,10 +6,10 @@ of course.
 
 https://github.com/user-attachments/assets/0a4e2606-e91b-44fd-bcec-83e1f44cc103
 
-> Note: This tool was built to clip subtitles from the [CantoCaptions](https://cantocaptions.com)
-> Cantonese subtitle library, so it may require some configuration tweaking to use for other 
-> subtitles. You can manage these configurations by updating the TOML files in the `config` folder.
-> Default CantoCaptions configuration includes: 
+> **Note**: This tool was built to clip subtitles from the [CantoCaptions](https://cantocaptions.com)
+> Cantonese subtitle library, so it may require some tweaking to use for other subtitles sets.
+> You can manage custom configurations by editing the TOML files in the `config` folder by hand.
+> Default CantoCaptions configurations include: 
 > 
 > * Cantonese audio tracks are selected automatically when a video has multiple.
 > * Show names, season and episode numbers are identified automatically when the
@@ -28,18 +28,28 @@ https://github.com/user-attachments/assets/0a4e2606-e91b-44fd-bcec-83e1f44cc103
 
 ## Quickstart
 
-**1. Install [Python](https://www.python.org/downloads/) 3.11 or newer**, and
-install [ffmpeg](https://ffmpeg.org/download.html) so that `ffmpeg` and `ffprobe`
-are on your PATH. (Searching works without ffmpeg; previewing and making clips
-does not.)
+#### 1. Install Prerequisites
 
-**2. Install the app.** In a terminal, from this folder:
+* [Python](https://www.python.org/downloads/) 3.11 or newer
+* [ffmpeg](https://ffmpeg.org/download.html). Ensure `ffmpeg` and `ffprobe`
+are on your PATH.
+
+#### 2. Clone
+
+Run the following commands from a terminal window.
+
+```bash
+git clone https://github.com/rookes/subtitle-clip-studio.git
+cd subtitle-clip-studio
+```
+
+#### 3. Install
 
 ```bash
 pip install -e .
 ```
 
-**3. Start it.**
+#### 4. Run
 
 ```bash
 clipper serve
@@ -48,8 +58,9 @@ clipper serve
 This command runs the app server on your machine and opens a browser to `http://127.0.0.1:8765`. 
 See more options with `clipper server --help`.
 
-**4. Tell it where your files are.** This part is required — open the **⚙ settings**
-menu in the app and set:
+#### 5. Configure
+
+Open the **⚙ settings** menu in the app and set:
 
 - **Subtitle root** — the folder holding your subtitle (`.srt`) files. For CantoCaptions, set this to
   the `CantoCaptions/Subtitle` directory.
@@ -57,12 +68,14 @@ menu in the app and set:
   mirror the subtitle folders, then videos will be automatically linked for clipping. Otherwise,
   you'll need to manually select your video location each time.
 
-**5. Search, tick the lines you want, and hit "Generate from selected."** The clip
-and a matching `.srt` land in `clips/` with a download link.
+#### 6. Search, Select, and Generate
 
-> Settings you save in the app are stored per-user and override the files in
-> [`config/`](config/), which are there if you'd rather edit roots, folder
-> exclusions, or audio-language preferences by hand.
+Now you can search for text that matches any SRT in your collection. Once you run a search, all lines
+will display by default, even if there isn't any matching video. You may need manually select the media 
+location, either for each show or for individual files.
+
+Once you've selected and adjusted your choice of subtitles clips, you can hit the "Generate from selected" 
+button to generate a compiled video (or a collection of videos if you select that option).
 
 ## Command line
 
