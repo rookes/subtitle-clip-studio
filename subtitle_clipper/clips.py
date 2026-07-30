@@ -1,4 +1,4 @@
-"""Turn a set of search matches into one stitched MKV with an embedded SRT.
+"""Turn a set of search matches into one stitched clip with its subtitles.
 
 Pipeline: cut each item's window (padded by default, or an explicit override
 set by the user in the UI) to a normalized temp clip, concat them, build a
@@ -6,6 +6,10 @@ combined SRT whose timestamps track the stitched timeline, then either mux
 that SRT back in as a soft subtitle track or burn it directly into the frame.
 Items without a usable video file are skipped and reported, never silently
 dropped.
+
+The output container comes from ``out_path``'s suffix (``.mp4`` by default,
+``.mkv`` also supported); :mod:`subtitle_clipper.ffmpeg` derives the muxer flags
+and subtitle codec from it.
 """
 
 from __future__ import annotations
@@ -31,17 +35,21 @@ class SkippedMatch:
 @dataclass
 class Report:
     output: Path | None                              # first (or only) video
-    srt: Path | None                                 # its sidecar
+    srt: Path | None                                 # its sidecar, if any
     included: list[Match] = field(default_factory=list)
     skipped: list[SkippedMatch] = field(default_factory=list)
     outputs: list[Path] = field(default_factory=list)  # every video written
-    srts: list[Path] = field(default_factory=list)     # matching sidecars
+    # Matching sidecars, positionally aligned with ``outputs``. Entries are
+    # None when the subtitles were burned into the frame — an external file
+    # would just be a duplicate of what's already on screen.
+    srts: list[Path | None] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"Generated {len(self.included)} clip(s)"]
         for out, srt in zip(self.outputs, self.srts):
             lines.append(f"  video: {out}")
-            lines.append(f"  subs:  {srt}")
+            if srt is not None:
+                lines.append(f"  subs:  {srt}")
         for s in self.skipped:
             lines.append(f"  skipped {s.label}: {s.reason}")
         return "\n".join(lines)
@@ -51,10 +59,17 @@ class Report:
 
 @dataclass(frozen=True)
 class CueEntry:
-    """One subtitle line's timing (in SOURCE-video seconds) and text."""
+    """One subtitle line's timing (in SOURCE-video seconds) and text.
+
+    ``highlights`` are half-open ``[start, end)`` character offsets into
+    ``text`` that the user emphasised in the Edit Timing panel. They are kept
+    as offsets rather than inline markup so ``text`` stays the plain on-screen
+    string everywhere; the markup is generated once, at SRT serialization.
+    """
     start: float
     end: float
     text: str
+    highlights: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,75 @@ class ClipRequest:
     win_end: float | None = None
     extra_cues: tuple[CueEntry, ...] = ()
     video_override: str | None = None
+    # Highlight ranges for the match's own line (extras carry their own).
+    target_highlights: tuple[tuple[int, int], ...] = ()
+
+
+# Highlighted text is emitted as a SubRip font tag. ffmpeg's SubRip decoder
+# turns it into an inline ASS colour override, so the same markup drives both
+# the downloadable .srt and the libass burn-in.
+HIGHLIGHT_COLOR = "#fff000"
+
+
+def normalize_highlights(
+    ranges, text_len: int
+) -> tuple[tuple[int, int], ...]:
+    """Clamp, drop and merge highlight ranges into canonical sorted form.
+
+    Offsets arrive from the browser, so nothing here trusts them: out-of-bounds
+    values are clamped, empty/inverted ranges dropped, and overlapping or
+    touching ranges merged so serialization can walk them in one pass.
+    """
+    clean: list[tuple[int, int]] = []
+    for r in ranges or ():
+        try:
+            start, end = int(r[0]), int(r[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        start = max(0, min(start, text_len))
+        end = max(0, min(end, text_len))
+        if end > start:
+            clean.append((start, end))
+    clean.sort()
+
+    merged: list[tuple[int, int]] = []
+    for start, end in clean:
+        if merged and start <= merged[-1][1]:      # overlapping or adjacent
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def apply_highlights(text: str, ranges) -> str:
+    """Wrap each highlighted range of ``text`` in a yellow ``<font>`` tag.
+
+    Wrappers are closed and reopened at line breaks so every SRT line carries
+    balanced markup — a tag straddling a newline is not reliably handled by
+    players or by ffmpeg's SubRip decoder.
+    """
+    spans = normalize_highlights(ranges, len(text))
+    if not spans:
+        return text
+
+    open_tag = f'<font color="{HIGHLIGHT_COLOR}">'
+    lines: list[str] = []
+    base = 0
+    for line in text.split("\n"):
+        stop = base + len(line)
+        cursor = base
+        parts: list[str] = []
+        for start, end in spans:
+            start, end = max(start, base), min(end, stop)
+            if end <= start:
+                continue                            # span is on another line
+            parts.append(text[cursor:start])
+            parts.append(open_tag + text[start:end] + "</font>")
+            cursor = end
+        parts.append(text[cursor:stop])
+        lines.append("".join(parts))
+        base = stop + 1                             # step over the "\n"
+    return "\n".join(lines)
 
 
 def _fmt_ts(seconds: float) -> str:
@@ -114,7 +198,8 @@ def build_combined_srt(segments: list[SegmentPlan]) -> tuple[str, float]:
             n += 1
             start_ts = _fmt_ts(offset + local_start)
             end_ts = _fmt_ts(offset + local_end)
-            blocks.append(f"{n}\n{start_ts} --> {end_ts}\n{cue.text}\n")
+            body = apply_highlights(cue.text, cue.highlights)
+            blocks.append(f"{n}\n{start_ts} --> {end_ts}\n{body}\n")
         offset += clip_dur
     return "\n".join(blocks), offset
 
@@ -140,7 +225,7 @@ def generate(
     burn_in: BurnStyle | None = None,
     separate: bool = False,
 ) -> Report:
-    """Cut, stitch and subtitle the given items into ``out_path`` (MKV).
+    """Cut, stitch and subtitle the given items into ``out_path``.
 
     ``records_by_id`` maps episode_id -> EpisodeRecord; matches carry a
     media_path but resolving to an absolute file needs the record's path plus
@@ -148,9 +233,9 @@ def generate(
     directly. ``burn_in``, when set, hardcodes the subtitles into the frame
     instead of muxing them as a soft track.
 
-    ``separate`` writes one MKV (+ ``.srt`` sidecar) per clip — named
-    ``{stem}-{n:02d}.mkv`` beside ``out_path`` — instead of concatenating every
-    clip into the single ``out_path``.
+    ``separate`` writes one video (+ ``.srt`` sidecar, unless burned in) per
+    clip — named ``{stem}-{n:02d}{suffix}`` beside ``out_path`` — instead of
+    concatenating every clip into the single ``out_path``.
     """
     spec = spec or NormSpec()
     out_path = Path(out_path)
@@ -181,7 +266,7 @@ def generate(
             cut_segment(src, win_start, win_end, seg_file,
                         audio_track=_select_audio_track(src), spec=spec)
             cues = sorted(
-                [CueEntry(m.start, m.end, m.text), *item.extra_cues],
+                [CueEntry(m.start, m.end, m.text, item.target_highlights), *item.extra_cues],
                 key=lambda c: c.start,
             )
             segments.append((SegmentPlan(win_start, win_end, cues), seg_file))
@@ -208,9 +293,14 @@ def generate(
 
 def _finalize(segment_files: list[Path], segment_plans: list[SegmentPlan],
               out_path: Path, work: Path, burn_in: BurnStyle | None,
-              spec: NormSpec) -> tuple[Path, Path]:
-    """Concat the given segments, build their combined SRT, mux/burn it in, and
-    write ``out_path`` plus a matching ``.srt`` sidecar. Returns ``(video, srt)``."""
+              spec: NormSpec) -> tuple[Path, Path | None]:
+    """Concat the given segments, build their combined SRT and mux/burn it in.
+
+    Returns ``(video, srt)``. The ``.srt`` sidecar is only written when the
+    subtitles were muxed as a soft track — when they're burned into the frame
+    the text is already on screen, so an external file is redundant and ``srt``
+    is ``None``.
+    """
     srt_text, _ = build_combined_srt(segment_plans)
     combined_srt = work / (out_path.stem + ".srt")
     combined_srt.write_text(srt_text, encoding="utf-8")
@@ -219,10 +309,10 @@ def _finalize(segment_files: list[Path], segment_plans: list[SegmentPlan],
     concat(segment_files, stitched, work_dir=work)
     if burn_in is not None:
         burn_subtitles(stitched, combined_srt, out_path, style=burn_in, crf=spec.crf)
-    else:
-        mux_subtitles(stitched, combined_srt, out_path,
-                      language=audio.subtitle_language_tag())
+        return out_path, None
 
+    mux_subtitles(stitched, combined_srt, out_path,
+                  language=audio.subtitle_language_tag())
     sidecar = out_path.with_suffix(".srt")
     sidecar.write_text(srt_text, encoding="utf-8")
     return out_path, sidecar

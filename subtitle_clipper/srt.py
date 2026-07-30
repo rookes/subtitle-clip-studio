@@ -65,7 +65,8 @@ def parse_srt(path: Path) -> list[Cue]:
         if not cleaned:
             return
         # The line directly above the timing line is the SRT sequence counter
-        # when it's a bare integer (SubtitleEdit bookmarks reference this number).
+        # when it's a bare integer (SubtitleEdit bookmarks reference this number
+        # minus one, since their own paragraph indices are 0-based).
         number = None
         if timing_i > 0:
             prev = block[timing_i - 1].strip()

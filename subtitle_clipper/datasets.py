@@ -156,13 +156,15 @@ def load_bookmarks(path: Path | str, master: Corpus | None) -> tuple[Corpus, str
 
     idxs = _read_bookmark_indices(path)
     cues = _ensure_parseable(srt_path)
+    # SubtitleEdit's ``idx`` is a 0-based position in its paragraph list, so it
+    # is one less than the printed SRT counter the same line carries.
     by_number = {c.number: c.index for c in cues if c.number is not None}
     cue_ids: list[int] = []
     for idx in idxs:
-        if idx in by_number:
-            cue_ids.append(by_number[idx])
-        elif 1 <= idx <= len(cues):        # fallback: idx as 1-based position
-            cue_ids.append(cues[idx - 1].index)
+        if idx + 1 in by_number:
+            cue_ids.append(by_number[idx + 1])
+        elif 0 <= idx < len(cues):         # fallback: idx as 0-based position
+            cue_ids.append(cues[idx].index)
     cue_ids = sorted(set(cue_ids))
 
     eid = f"custom_bm_{slugify(srt_path.stem)}"

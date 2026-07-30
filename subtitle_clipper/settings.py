@@ -8,6 +8,7 @@ config in ``config/``. A ``[media]`` and an ``[output]`` table:
     media_root = "D:/Media"          # overrides media_map.toml's media_root
 
     [output]
+    container = "mp4"              # mp4 | mkv
     resolution = "720p"            # 480p | 720p | 1080p
     quality = "medium"             # low | medium | high
 
@@ -34,9 +35,14 @@ RESOLUTIONS: dict[str, tuple[int, int]] = {
 # Quality -> libx264 CRF (lower = better/larger). "medium" keeps the previous
 # fixed default so existing behavior is unchanged out of the box.
 QUALITY_CRF: dict[str, int] = {"low": 26, "medium": 20, "high": 17}
+# Output container -> the subtitle codec its muxer accepts for a soft sub track.
+# MP4 is the default: it plays everywhere clips get shared (browsers, phones),
+# where MKV usually doesn't.
+CONTAINERS: dict[str, str] = {"mp4": "mov_text", "mkv": "srt"}
 
 DEFAULT_RESOLUTION = "720p"
 DEFAULT_QUALITY = "medium"
+DEFAULT_CONTAINER = "mp4"
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,7 @@ class ClipperSettings:
     media_root: str | None = None          # override for the media_map media root
     resolution: str = DEFAULT_RESOLUTION
     quality: str = DEFAULT_QUALITY
+    container: str = DEFAULT_CONTAINER
 
     def subtitle_root_path(self) -> Path | None:
         return Path(self.subtitle_root).expanduser() if self.subtitle_root else None
@@ -57,6 +64,11 @@ class ClipperSettings:
 
     def crf(self) -> int:
         return QUALITY_CRF.get(self.quality, QUALITY_CRF[DEFAULT_QUALITY])
+
+    def suffix(self) -> str:
+        """The output file extension, e.g. ``.mp4``. The rest of the pipeline
+        derives the muxer and subtitle codec from this."""
+        return "." + (self.container if self.container in CONTAINERS else DEFAULT_CONTAINER)
 
 
 def settings_path() -> Path:
@@ -95,6 +107,8 @@ def load_settings(path: Path | None = None) -> ClipperSettings:
                           RESOLUTIONS, DEFAULT_RESOLUTION),
         quality=_clean(str(output.get("quality", DEFAULT_QUALITY)),
                        QUALITY_CRF, DEFAULT_QUALITY),
+        container=_clean(str(output.get("container", DEFAULT_CONTAINER)),
+                         CONTAINERS, DEFAULT_CONTAINER),
     )
 
 
@@ -115,6 +129,7 @@ def _dump_toml(s: ClipperSettings) -> str:
         root_line,
         "",
         "[output]",
+        f"container = {_toml_str(s.container)}     # mp4 | mkv",
         f"resolution = {_toml_str(s.resolution)}   # 480p | 720p | 1080p",
         f"quality = {_toml_str(s.quality)}       # low | medium | high",
         "",

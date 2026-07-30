@@ -107,15 +107,29 @@ def _bookmarks_json(idxs):
 def test_bookmarks_selects_only_referenced_lines(tmp_path):
     srt = _write(tmp_path / "Ep.srt")
     bm = tmp_path / "Ep.srt.SE.bookmarks"
-    bm.write_text(_bookmarks_json([1, 3]), encoding="utf-8")
+    bm.write_text(_bookmarks_json([0, 2]), encoding="utf-8")
     corpus, label = load_bookmarks(bm, None)
     clear_cache()
     rec = corpus.records[0]
-    # idx 1 -> cue.index 0 (first), idx 3 -> cue.index 2 (third).
+    # SubtitleEdit idx is 0-based: idx 0 -> SRT "1" (first), idx 2 -> SRT "3".
     assert rec.cue_ids == [0, 2]
     hits = search(corpus, "", allow_empty=True, group_versions=True)
     assert [m.text for m in hits] == ["first line", "third line"]
     assert "2 bookmark" in label
+
+
+def test_bookmarks_use_printed_counter_when_numbering_is_offset(tmp_path):
+    # A file whose counters don't start at 1: idx must still resolve via the
+    # printed number (idx + 1), not by position.
+    srt = _write(tmp_path / "Ep.srt", SRT.replace("1\n00:00:01", "4\n00:00:01"))
+    bm = tmp_path / "Ep.srt.SE.bookmarks"
+    bm.write_text(_bookmarks_json([1]), encoding="utf-8")
+    corpus, _ = load_bookmarks(bm, None)
+    clear_cache()
+    # idx 1 -> printed "2" -> the second cue.
+    assert corpus.records[0].cue_ids == [1]
+    hits = search(corpus, "", allow_empty=True, group_versions=True)
+    assert [m.text for m in hits] == ["second line"]
 
 
 def test_bookmarks_missing_paired_srt(tmp_path):

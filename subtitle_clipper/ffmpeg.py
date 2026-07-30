@@ -101,6 +101,21 @@ class BurnStyle:
     outline: int = 2
 
 
+# The output container is inferred by ffmpeg from the file suffix; these two
+# tables carry the per-container details the muxer can't guess for us.
+SUBTITLE_CODECS = {".mkv": "srt", ".mp4": "mov_text"}
+
+
+def _container_args(out: Path) -> list[str]:
+    """Extra muxer flags implied by ``out``'s container.
+
+    MP4 keeps its index (the ``moov`` atom) at the end of the file by default,
+    so a player can't start until the whole download finishes; ``+faststart``
+    rewrites it to the front.
+    """
+    return ["-movflags", "+faststart"] if out.suffix.lower() == ".mp4" else []
+
+
 def _escape_for_filter(path: Path) -> str:
     """Escape a path for embedding in an ffmpeg filtergraph string.
 
@@ -127,19 +142,26 @@ def burn_subtitles_cmd(video: Path, srt: Path, out: Path, *, style: BurnStyle,
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
         "-c:a", "copy",
+        *_container_args(out),
         str(out),
     ]
 
 
 def mux_subtitles_cmd(video: Path, srt: Path, out: Path, *, language: str = "yue") -> list[str]:
-    """Embed ``srt`` as a soft subtitle track in ``video`` (MKV, stream copy)."""
+    """Embed ``srt`` as a soft subtitle track in ``video`` (stream copy).
+
+    The subtitle codec follows ``out``'s container: MKV carries SubRip as-is,
+    MP4 needs it converted to ``mov_text``.
+    """
+    codec = SUBTITLE_CODECS.get(out.suffix.lower(), "srt")
     return [
         "ffmpeg", "-nostdin", "-y",
         "-i", str(video), "-i", str(srt),
         "-map", "0", "-map", "1",
-        "-c", "copy", "-c:s", "srt",
+        "-c", "copy", "-c:s", codec,
         "-metadata:s:s:0", f"language={language}",
         "-disposition:s:0", "default",
+        *_container_args(out),
         str(out),
     ]
 

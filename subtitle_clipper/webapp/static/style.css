@@ -10,6 +10,9 @@
   --warn: #e0b64a;
   --err: #e06a6a;
   --border: #2a2f3a;
+  /* Emphasis colour for highlighted subtitle text. Kept in sync with
+     clips.HIGHLIGHT_COLOR, which wraps the same text for SRT/burn-in. */
+  --highlight: #fff000;
 }
 
 * { box-sizing: border-box; }
@@ -168,6 +171,10 @@ mark {
 }
 .gen-bar label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; }
 #gen-status { color: var(--muted); font-size: 0.9rem; }
+.out-ext { color: var(--muted); margin-left: -0.15rem; }
+.download-list { list-style: none; margin: 0.3rem 0 0; padding: 0; display: flex;
+  flex-direction: column; gap: 0.15rem; }
+#download-all { margin-left: 0.3rem; }
 .burn-opts { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;
   width: 100%; padding-top: 0.5rem; border-top: 1px dashed var(--border); }
 
@@ -247,8 +254,20 @@ mark {
 .line.target { border-color: var(--accent-2); }
 .line-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .line-text { flex: 1; min-width: 6rem; background: var(--panel); border: 1px solid var(--border);
-  color: var(--text); border-radius: 5px; padding: 0.3rem 0.45rem; font: inherit; }
+  color: var(--text); border-radius: 5px; padding: 0.3rem 0.45rem; font: inherit;
+  /* pre-wrap keeps the newlines of a two-line cue; the caret needs the height
+     even when the line is momentarily empty. */
+  white-space: pre-wrap; min-height: 1.65rem; }
+.line-text:focus { outline: none; border-color: var(--accent); }
 .line-text.edited { border-color: var(--warn); }
+.line-text .hl { color: var(--highlight); background: rgba(255,240,0,0.12); border-radius: 2px; }
+
+.hl-float {
+  position: absolute; z-index: 40; font-size: 0.78rem; padding: 0.2rem 0.5rem;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.45); white-space: nowrap;
+}
+.hl-float:hover { background: var(--panel-2); filter: brightness(1.3); }
 .line-reset { background: none; padding: 0.1rem 0.4rem; color: var(--warn); }
 .line-reset:hover { background: rgba(224,182,74,0.16); }
 .line-remove { background: none; padding: 0.1rem 0.4rem; color: var(--err); }

@@ -18,6 +18,8 @@ from ..corpus import Corpus, list_dir, load_episodes, match_videos_in_directory,
 from ..ffmpeg import BurnStyle, NormSpec, ffmpeg_available, preview
 from ..search import Match, _cued, search
 from ..settings import (
+    CONTAINERS,
+    DEFAULT_CONTAINER,
     QUALITY_CRF,
     RESOLUTIONS,
     ClipperSettings,
@@ -28,6 +30,8 @@ from ..settings import (
 
 STATIC_DIR = Path(__file__).parent / "static"
 PREVIEW_DIR = Path(tempfile.gettempdir()) / "clipper_preview"
+# Everything the download endpoint is allowed to serve out of ``out_dir``.
+DOWNLOAD_SUFFIXES = tuple("." + c for c in CONTAINERS) + (".srt", ".zip")
 
 
 class _State:
@@ -306,7 +310,10 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
     def api_generate():
         body = request.get_json(force=True, silent=True) or {}
         pad = float(body.get("pad", DEFAULT_PAD_S))
-        out_name = _safe_name(body.get("name") or "clip.mkv")
+        settings = load_settings()
+        # The container is a setting, not part of the typed name — whatever
+        # extension the user typed is replaced by the configured one.
+        out_name = _safe_name(body.get("name") or "clip", settings.suffix())
         out_path = state.out_dir / out_name
         corpus = state._corpus or state.corpus(ai=False)
 
@@ -314,7 +321,8 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
         for d in body.get("matches", []):
             match = Match.from_dict(d)
             extra_cues = tuple(
-                CueEntry(float(c["start"]), float(c["end"]), c["text"])
+                CueEntry(float(c["start"]), float(c["end"]), c["text"],
+                         _highlights(c.get("highlights")))
                 for c in d.get("extra_cues", [])
             )
             items.append(ClipRequest(
@@ -323,6 +331,7 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
                 win_end=d.get("win_end"),
                 extra_cues=extra_cues,
                 video_override=d.get("video_override"),
+                target_highlights=_highlights(d.get("highlights")),
             ))
 
         burn = body.get("burn_in")
@@ -334,12 +343,13 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             outline=int(burn.get("outline", 2)),
         ) if burn else None
 
-        settings = load_settings()
         width, height = settings.dimensions()
         spec = NormSpec(width=width, height=height, crf=settings.crf())
         separate = bool(body.get("separate"))
+        # Bundling only means something when there are several files to bundle.
+        as_zip = separate and bool(body.get("zip"))
 
-        if separate:
+        if as_zip:
             # Per-clip files go to a temp dir; only the bundled zip lands in clips/.
             with tempfile.TemporaryDirectory(prefix="clipper_zip_") as tmp:
                 report = generate(
@@ -347,7 +357,7 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
                     pad_s=pad, spec=spec, records_by_id=state._by_id,
                     burn_in=burn_style, separate=True,
                 )
-                download = None
+                downloads = []
                 if report.outputs:
                     zip_name = _safe_name(body.get("name") or "clips", ".zip")
                     state.out_dir.mkdir(parents=True, exist_ok=True)
@@ -357,29 +367,40 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
                             zf.write(out, out.name)
                             if srt and srt.is_file():
                                 zf.write(srt, srt.name)
-                    download = zip_name
+                    downloads = [zip_name]
         else:
+            # Both the single-file and the unbundled per-clip case write straight
+            # into out_dir, so every file is individually downloadable.
             report = generate(
                 items, corpus.media_root, out_path,
-                pad_s=pad, spec=spec, records_by_id=state._by_id, burn_in=burn_style,
+                pad_s=pad, spec=spec, records_by_id=state._by_id,
+                burn_in=burn_style, separate=separate,
             )
-            download = out_name if report.output else None
+            downloads = []
+            for out, srt in zip(report.outputs, report.srts):
+                downloads.append(out.name)
+                if srt and srt.is_file():
+                    downloads.append(srt.name)
 
         return jsonify(
             generated=len(report.included),
             output=str(report.output) if report.output else None,
             srt=str(report.srt) if report.srt else None,
-            download=download,
+            download=downloads[0] if downloads else None,
+            downloads=downloads,
             outputs=[o.name for o in report.outputs],
             separate=separate,
+            zipped=as_zip,
             skipped=[{"label": s.label, "reason": s.reason} for s in report.skipped],
         )
 
     @app.get("/api/download/<path:name>")
     def api_download(name):
-        # Preserve the actual extension (.mkv/.srt/.zip); default to .mkv.
+        # Preserve the actual extension; fall back to the configured container.
         suffix = Path(name).suffix.lower()
-        safe = _safe_name(name, suffix if suffix in (".mkv", ".srt", ".zip") else ".mkv")
+        safe = _safe_name(
+            name, suffix if suffix in DOWNLOAD_SUFFIXES else load_settings().suffix()
+        )
         target = (state.out_dir / safe).resolve()
         if not target.is_file() or target.parent != state.out_dir.resolve():
             return jsonify(error="not found"), 404
@@ -395,8 +416,10 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             media_root=s.media_root or "",
             resolution=s.resolution,
             quality=s.quality,
+            container=s.container,
             resolutions=list(RESOLUTIONS),
             qualities=list(QUALITY_CRF),
+            containers=list(CONTAINERS),
             effective_subtitle_root=str(eff_sub) if eff_sub else None,
             effective_media_root=str(eff_media) if eff_media else None,
             path=str(settings_path()),
@@ -410,6 +433,7 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             media_root=(body.get("media_root") or "").strip() or None,
             resolution=str(body.get("resolution", "720p")),
             quality=str(body.get("quality", "medium")),
+            container=str(body.get("container", DEFAULT_CONTAINER)),
         )
         # load_settings() clamps invalid enums to defaults; round-trip so the
         # saved file (and the response) always reflect validated values.
@@ -431,19 +455,36 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
     def _settings_payload() -> dict:
         s = load_settings()
         return {"subtitle_root": s.subtitle_root or "", "media_root": s.media_root or "",
-                "resolution": s.resolution, "quality": s.quality}
+                "resolution": s.resolution, "quality": s.quality,
+                "container": s.container}
 
     return app
 
 
-def _safe_name(name: str, suffix: str = ".mkv") -> str:
+def _highlights(raw) -> tuple[tuple[int, int], ...]:
+    """Coerce the JSON ``[[start, end], ...]`` highlight ranges to a tuple.
+
+    Bounds checking and merging happen in :func:`clips.normalize_highlights`,
+    which knows the text length; this only shapes the input.
+    """
+    out: list[tuple[int, int]] = []
+    for r in raw or ():
+        try:
+            out.append((int(r[0]), int(r[1])))
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    return tuple(out)
+
+
+def _safe_name(name: str, suffix: str = ".mp4") -> str:
     """Reject path traversal; keep just the basename with the given suffix.
 
-    Any existing ``.mkv``/``.srt``/``.zip`` extension is stripped first so the
-    caller's ``suffix`` always wins (e.g. ``clip.mkv`` -> ``clip.zip``)."""
+    Any known output extension is stripped first so the caller's ``suffix``
+    always wins (e.g. ``clip.mkv`` -> ``clip.zip``). Without the strip, a name
+    the user typed with an extension would end up doubled (``clip.mp4.mkv``)."""
     base = Path(name).name
     low = base.lower()
-    for ext in (".mkv", ".srt", ".zip"):
+    for ext in DOWNLOAD_SUFFIXES:
         if low.endswith(ext):
             base = base[: -len(ext)]
             break

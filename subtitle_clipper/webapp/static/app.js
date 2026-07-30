@@ -3,6 +3,9 @@
 const $ = (id) => document.getElementById(id);
 const DEFAULT_PAD = 0.5;
 const EPS = 1e-6;
+// Emphasis colour, kept in sync with clips.HIGHLIGHT_COLOR (server side) and
+// --highlight (style.css).
+const HIGHLIGHT_COLOR = "#fff000";
 
 let lastResults = [];      // all Match dicts from the server (capped), paginated in the UI
 let lastQuery = "";        // for match highlighting
@@ -181,6 +184,152 @@ function highlight(text, query, isRegex) {
   return out + escapeHtml(text.slice(last));
 }
 
+// --- highlight ranges -------------------------------------------------------
+// A line's emphasis is stored as half-open [start, end) character offsets into
+// its plain text, never as inline markup. That keeps the text a plain string
+// everywhere (search display, payloads, preview) and confines the markup to a
+// single serialization step on the server.
+
+// Sort, clamp and merge overlapping/touching ranges. Mirrors
+// clips.normalize_highlights so both ends agree on the canonical form.
+function mergeRanges(ranges, textLen) {
+  const clean = (ranges || [])
+    .map(([s, e]) => [Math.max(0, Math.min(s, textLen)), Math.max(0, Math.min(e, textLen))])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const [s, e] of clean) {
+    if (out.length && s <= out[out.length - 1][1]) {
+      out[out.length - 1][1] = Math.max(out[out.length - 1][1], e);
+    } else {
+      out.push([s, e]);
+    }
+  }
+  return out;
+}
+
+function addRange(ranges, start, end, textLen) {
+  return mergeRanges([...(ranges || []), [start, end]], textLen);
+}
+
+function removeRange(ranges, start, end, textLen) {
+  const out = [];
+  for (const [s, e] of ranges || []) {
+    if (s < start) out.push([s, Math.min(e, start)]);
+    if (e > end) out.push([Math.max(s, end), e]);
+  }
+  return mergeRanges(out, textLen);
+}
+
+function rangesCover(ranges, start, end) {
+  return (ranges || []).some(([s, e]) => s <= start && e >= end);
+}
+
+// Paint {text, highlights} into a contenteditable. Newlines become <br> so a
+// genuinely two-line cue survives editing (the old <input> silently dropped them).
+function renderLineText(el, text, highlights) {
+  const spans = mergeRanges(highlights, text.length);
+  const asHtml = (s) => escapeHtml(s).replace(/\n/g, "<br>");
+  let html = "", cursor = 0;
+  for (const [s, e] of spans) {
+    html += asHtml(text.slice(cursor, s)) + '<span class="hl">' + asHtml(text.slice(s, e)) + "</span>";
+    cursor = e;
+  }
+  el.innerHTML = html + asHtml(text.slice(cursor));
+}
+
+// The inverse: flatten a contenteditable back to {text, highlights}.
+function readLineText(el) {
+  let text = "";
+  const highlights = [];
+  const walk = (node, inHl) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        text += child.data;
+      } else if (child.nodeName === "BR") {
+        text += "\n";
+      } else {
+        const start = text.length;
+        const hl = inHl || (child.classList && child.classList.contains("hl"));
+        walk(child, hl);
+        if (hl && !inHl && text.length > start) highlights.push([start, text.length]);
+      }
+    }
+  };
+  walk(el, false);
+  return { text, highlights: mergeRanges(highlights, text.length) };
+}
+
+// Absolute character offset of (node, offset) within `el`, counting <br> as one
+// character so it lines up with the "\n" readLineText produces.
+function offsetInElement(el, node, offset) {
+  let count = 0, found = false;
+  const walk = (parent) => {
+    for (const child of parent.childNodes) {
+      if (found) return;
+      if (child === node && child.nodeType !== Node.TEXT_NODE) {
+        // Selection endpoints can address a child index rather than a text node.
+        for (let k = 0; k < offset && k < child.childNodes.length; k++) {
+          count += (child.childNodes[k].textContent || "").length;
+        }
+        found = true;
+        return;
+      }
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (child === node) { count += offset; found = true; return; }
+        count += child.data.length;
+      } else if (child.nodeName === "BR") {
+        count += 1;
+      } else {
+        walk(child);
+      }
+    }
+  };
+  if (node === el) {
+    for (let k = 0; k < offset && k < el.childNodes.length; k++) {
+      count += el.childNodes[k].nodeName === "BR"
+        ? 1 : (el.childNodes[k].textContent || "").length;
+    }
+    return count;
+  }
+  walk(el);
+  return count;
+}
+
+// Re-select [start, end) after a re-render, so repeated toggles keep working on
+// the same text without the user re-dragging.
+function selectOffsets(el, start, end) {
+  const locate = (target) => {
+    let count = 0, hit = null;
+    const walk = (parent) => {
+      for (const child of parent.childNodes) {
+        if (hit) return;
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (count + child.data.length >= target) { hit = [child, target - count]; return; }
+          count += child.data.length;
+        } else if (child.nodeName === "BR") {
+          if (count + 1 > target) { hit = [child.parentNode, 0]; return; }
+          count += 1;
+        } else {
+          walk(child);
+        }
+      }
+    };
+    walk(el);
+    return hit || [el, el.childNodes.length];
+  };
+  const [startNode, startOff] = locate(start);
+  const [endNode, endOff] = locate(end);
+  const range = document.createRange();
+  try {
+    range.setStart(startNode, startOff);
+    range.setEnd(endNode, endOff);
+  } catch { return; }
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 // Treat a click that ends a text selection as "the user was selecting text",
 // not "the user wants to open the link" — lets path/title stay copyable.
 function isSelectingText() {
@@ -198,9 +347,10 @@ function defaultItemState() {
     winComputed: false,
     editedStart: false,
     editedEnd: false,
-    extraCues: [],              // [{cueIndex, start, end, text, origText}]
+    extraCues: [],              // [{cueIndex, start, end, text, origText, highlights}]
     removedCueIndices: new Set(),
     targetText: null,           // edited target text, or null when unchanged
+    targetHighlights: [],       // [[start, end), …] offsets into the target text
     videoOverride: null,        // {path, status} | null
   };
 }
@@ -515,6 +665,7 @@ function onVersionChange(i, source) {
   st.extraCues = [];
   st.removedCueIndices = new Set();
   st.targetText = null;
+  st.targetHighlights = [];
   st.selected = effectiveMedia(i).hasVideo;
 
   const refs = rowRefs[i];
@@ -654,14 +805,18 @@ async function onPreviewClick(i) {
 function previewCues(i, winStart, winEnd) {
   const av = activeVersion(i);
   const state = itemState[i];
-  const cues = [{ start: av.start, end: av.end, text: targetTextOf(i) }];
-  for (const e of state.extraCues) cues.push({ start: e.start, end: e.end, text: e.text });
+  const cues = [{ start: av.start, end: av.end, text: targetTextOf(i),
+                  highlights: state.targetHighlights }];
+  for (const e of state.extraCues) {
+    cues.push({ start: e.start, end: e.end, text: e.text, highlights: e.highlights });
+  }
   return cues
     .filter((c) => c.end > winStart + EPS && c.start < winEnd - EPS && c.text)
     .map((c) => ({
       start: Math.max(0, c.start - winStart),
       end: Math.min(winEnd - winStart, c.end - winStart),
       text: c.text,
+      highlights: c.highlights || [],
     }))
     .filter((c) => c.end > c.start)
     .sort((a, b) => a.start - b.start);
@@ -685,11 +840,26 @@ function previewVttUrl(i, winStart, winEnd) {
     `::cue { color: ${color}; font-family: "${font.replace(/"/g, "")}", sans-serif;` +
     ` font-size: ${Math.max(50, Math.round((size / 28) * 100))}%; background: transparent;` +
     (shadow.length ? ` text-shadow: ${shadow.join(", ")};` : "") + " }";
-  let vtt = "WEBVTT\n\nSTYLE\n" + cueStyle + "\n";
+  // Highlighted spans get the same yellow the SRT/burn-in will use.
+  const hlStyle = `::cue(.hl) { color: ${HIGHLIGHT_COLOR}; }`;
+  let vtt = "WEBVTT\n\nSTYLE\n" + cueStyle + "\n\nSTYLE\n" + hlStyle + "\n";
   cues.forEach((c, n) => {
-    vtt += `\n${n + 1}\n${fmtClock(c.start)} --> ${fmtClock(c.end)}\n${c.text}\n`;
+    vtt += `\n${n + 1}\n${fmtClock(c.start)} --> ${fmtClock(c.end)}\n${vttCueText(c)}\n`;
   });
   return URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
+}
+
+// Wrap the cue's highlight ranges in WebVTT class spans so the preview matches
+// what the burn-in will render.
+function vttCueText(cue) {
+  const spans = mergeRanges(cue.highlights, cue.text.length);
+  if (!spans.length) return cue.text;
+  let out = "", cursor = 0;
+  for (const [s, e] of spans) {
+    out += cue.text.slice(cursor, s) + "<c.hl>" + cue.text.slice(s, e) + "</c>";
+    cursor = e;
+  }
+  return out + cue.text.slice(cursor);
 }
 
 function clearPreviewTrack(refs) {
@@ -765,7 +935,8 @@ function recomputeExtras(i, { forward }) {
     const isBackward = c.end <= av.start + EPS;
     if (!isBackward && !forward) continue;
     if (!state.extraCues.some((e) => e.cueIndex === c.cue_index)) {
-      state.extraCues.push({ cueIndex: c.cue_index, start: c.start, end: c.end, text: c.text, origText: c.text });
+      state.extraCues.push({ cueIndex: c.cue_index, start: c.start, end: c.end,
+                             text: c.text, origText: c.text, highlights: [] });
     }
   }
   // drop extras that no longer fit the (possibly shrunk) window
@@ -781,7 +952,7 @@ async function toggleExpand(i) {
   state.expanded = !state.expanded;
   refs.editor.hidden = !state.expanded;
   refs.expandBtn.textContent = state.expanded ? "Hide timing ▴" : "Edit timing ▾";
-  if (!state.expanded) return;
+  if (!state.expanded) { hideHighlightButton(); return; }
   await ensureWindow(i);
   renderTiming(i);
 }
@@ -822,29 +993,61 @@ function renderLines(i) {
 
     const orig = row.target ? av.text : row.cue.origText;
     const cur = row.target ? targetTextOf(i) : row.cue.text;
-    input.value = cur;
+    // The editor owns highlight state for its line; hlOwner lets the floating
+    // Highlight button find and write it back without knowing about rows.
+    input._hlOwner = {
+      resultIndex: i,
+      getHighlights: () => (row.target ? state.targetHighlights : row.cue.highlights) || [],
+      setHighlights: (ranges) => {
+        if (row.target) state.targetHighlights = ranges;
+        else row.cue.highlights = ranges;
+      },
+    };
+    renderLineText(input, cur, input._hlOwner.getHighlights());
+
     const markEdited = () => {
-      const edited = input.value !== orig;
+      const { text, highlights } = readLineText(input);
+      const edited = text !== orig || highlights.length > 0;
       input.classList.toggle("edited", edited);
       resetBtn.hidden = !edited;
     };
     markEdited();
 
+    // Read the DOM back into state on every keystroke, but never re-render it
+    // here — replacing innerHTML mid-typing would destroy the caret.
     input.addEventListener("input", () => {
+      const { text, highlights } = readLineText(input);
+      input._hlOwner.setHighlights(highlights);
       if (row.target) {
-        state.targetText = input.value === av.text ? null : input.value;
+        state.targetText = text === av.text ? null : text;
         renderHeaderText(i);
       } else {
-        row.cue.text = input.value;
+        row.cue.text = text;
       }
       markEdited();
     });
+    // Enter would otherwise insert a <div>/<p>; a line break matches the SRT.
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        document.execCommand("insertLineBreak");
+      }
+    });
+    // Paste plain text only, so no foreign markup enters the editor.
+    input.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData("text");
+      document.execCommand("insertText", false, text.replace(/\r\n?/g, "\n"));
+    });
     resetBtn.addEventListener("click", () => {
-      input.value = orig;
+      input._hlOwner.setHighlights([]);
+      renderLineText(input, orig, []);
       if (row.target) { state.targetText = null; renderHeaderText(i); }
       else { row.cue.text = orig; }
+      hideHighlightButton();
       markEdited();
     });
+    input._hlOwner.markEdited = markEdited;
 
     if (row.target) {
       removeBtn.hidden = true;
@@ -854,6 +1057,82 @@ function renderLines(i) {
     refs.linesList.appendChild(node);
   }
 }
+
+// --- floating highlight button ----------------------------------------------
+// Emphasis works like bold: select text, press the button, press it again on the
+// same text to clear it. The button follows the selection instead of sitting in
+// a fixed spot, so it's always next to what it acts on.
+
+// The .line-text the current selection lives in, or null. Both endpoints must be
+// in the same editor — a selection spanning two lines has no single owner.
+function selectedLineEditor() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+  const owner = (node) => {
+    let el = node && node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+    while (el && el !== document.body) {
+      if (el.classList && el.classList.contains("line-text")) return el;
+      el = el.parentNode;
+    }
+    return null;
+  };
+  const a = owner(sel.anchorNode);
+  return a && a === owner(sel.focusNode) ? a : null;
+}
+
+// Selection as [start, end) offsets into the editor's flat text.
+function selectionOffsets(el) {
+  const sel = window.getSelection();
+  const a = offsetInElement(el, sel.anchorNode, sel.anchorOffset);
+  const b = offsetInElement(el, sel.focusNode, sel.focusOffset);
+  return [Math.min(a, b), Math.max(a, b)];
+}
+
+function hideHighlightButton() {
+  $("hl-float").hidden = true;
+}
+
+function syncHighlightButton() {
+  const btn = $("hl-float");
+  const el = selectedLineEditor();
+  if (!el) { hideHighlightButton(); return; }
+  const [start, end] = selectionOffsets(el);
+  if (end <= start) { hideHighlightButton(); return; }
+
+  const covered = rangesCover(el._hlOwner ? el._hlOwner.getHighlights() : [], start, end);
+  btn.textContent = covered ? "🖍 Remove highlight" : "🖍 Highlight";
+  btn.hidden = false;
+  // Measure only after unhiding, or offsetWidth is 0 and the button sits left.
+  const rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  const left = rect.left + window.scrollX + rect.width / 2 - btn.offsetWidth / 2;
+  btn.style.left = `${Math.max(4, Math.min(left, window.innerWidth - btn.offsetWidth - 4))}px`;
+  btn.style.top = `${rect.top + window.scrollY - btn.offsetHeight - 6}px`;
+}
+
+function toggleHighlight() {
+  const el = selectedLineEditor();
+  if (!el || !el._hlOwner) return;
+  const [start, end] = selectionOffsets(el);
+  if (end <= start) return;
+
+  const { text } = readLineText(el);
+  const current = el._hlOwner.getHighlights();
+  const next = rangesCover(current, start, end)
+    ? removeRange(current, start, end, text.length)
+    : addRange(current, start, end, text.length);
+  el._hlOwner.setHighlights(next);
+  renderLineText(el, text, next);
+  selectOffsets(el, start, end);        // keep the selection so toggling repeats
+  if (el._hlOwner.markEdited) el._hlOwner.markEdited();
+  syncHighlightButton();
+}
+
+document.addEventListener("selectionchange", syncHighlightButton);
+// mousedown would collapse the selection before click fires.
+$("hl-float").addEventListener("mousedown", (e) => e.preventDefault());
+$("hl-float").addEventListener("click", toggleHighlight);
+window.addEventListener("scroll", hideHighlightButton, { passive: true });
+window.addEventListener("resize", hideHighlightButton);
 
 function onWinInput(i, which) {
   const refs = rowRefs[i];
@@ -1075,6 +1354,11 @@ $("burn-in").addEventListener("change", () => {
   $("burn-opts").hidden = !$("burn-in").checked;
 });
 
+// Bundling is only meaningful once there's more than one file.
+$("separate-files").addEventListener("change", () => {
+  document.querySelector(".zip-toggle").hidden = !$("separate-files").checked;
+});
+
 // --- generate ---------------------------------------------------------------
 
 function buildPayload(i) {
@@ -1100,6 +1384,9 @@ function buildPayload(i) {
   };
   if (!state) return payload;
   if (state.targetText != null) payload.text = state.targetText;
+  if (state.targetHighlights && state.targetHighlights.length) {
+    payload.highlights = state.targetHighlights;
+  }
   if (state.videoOverride && state.videoOverride.path) {
     payload.video_override = state.videoOverride.path;
   }
@@ -1108,9 +1395,52 @@ function buildPayload(i) {
     payload.win_end = state.winEnd;
   }
   if (state.extraCues.length) {
-    payload.extra_cues = state.extraCues.map((e) => ({ start: e.start, end: e.end, text: e.text }));
+    payload.extra_cues = state.extraCues.map((e) => ({
+      start: e.start, end: e.end, text: e.text, highlights: e.highlights || [],
+    }));
   }
   return payload;
+}
+
+function downloadUrl(name) {
+  return `/api/download/${encodeURIComponent(name)}`;
+}
+
+// One link per generated file (they all live in the clips/ output dir), plus a
+// "Download all" shortcut when there are several. Browsers throttle a burst of
+// programmatic clicks, hence the stagger; the first one may prompt to allow
+// multiple downloads.
+function renderDownloads(names) {
+  if (!names.length) return;
+  const status = $("gen-status");
+  if (names.length > 1) {
+    const all = document.createElement("button");
+    all.type = "button";
+    all.id = "download-all";
+    all.textContent = `↓ Download all (${names.length})`;
+    all.addEventListener("click", () => {
+      names.forEach((name, n) => setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = downloadUrl(name);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, n * 300));
+    });
+    status.append(all);
+  }
+  const list = document.createElement("ul");
+  list.className = "download-list";
+  for (const name of names) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = downloadUrl(name);
+    a.textContent = name;
+    li.append(a);
+    list.append(li);
+  }
+  status.append(list);
 }
 
 async function runGenerate() {
@@ -1128,6 +1458,7 @@ async function runGenerate() {
       pad: currentPad(),
       name: $("out-name").value,
       separate: $("separate-files").checked,
+      zip: $("zip-bundle").checked,
     };
     if ($("burn-in").checked) {
       body.burn_in = {
@@ -1145,16 +1476,9 @@ async function runGenerate() {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "generation failed");
-    let msg = `Done: ${data.generated} clip(s).`;
-    if (data.download) msg += ` → `;
     $("gen-status").innerHTML = "";
-    $("gen-status").append(document.createTextNode(msg));
-    if (data.download) {
-      const a = document.createElement("a");
-      a.href = `/api/download/${encodeURIComponent(data.download)}`;
-      a.textContent = data.download;
-      $("gen-status").append(a);
-    }
+    $("gen-status").append(document.createTextNode(`Done: ${data.generated} clip(s).`));
+    renderDownloads(data.downloads || (data.download ? [data.download] : []));
     if (data.skipped && data.skipped.length) {
       const div = document.createElement("div");
       div.style.color = "var(--warn)";
@@ -1189,6 +1513,11 @@ function applySettingsToForm(d) {
   $("set-media-root").value = d.media_root || "";
   if (d.resolution) $("set-resolution").value = d.resolution;
   if (d.quality) $("set-quality").value = d.quality;
+  if (d.container) {
+    $("set-container").value = d.container;
+    // The output-name box holds a stem only; the container supplies the suffix.
+    $("out-ext").textContent = "." + d.container;
+  }
   $("set-subtitle-hint").textContent = d.effective_subtitle_root
     ? "Currently searching: " + d.effective_subtitle_root
     : "No subtitle root set — configure config/corpus.toml or point to a folder above.";
@@ -1229,6 +1558,7 @@ async function saveSettings() {
         media_root: $("set-media-root").value,
         resolution: $("set-resolution").value,
         quality: $("set-quality").value,
+        container: $("set-container").value,
       }),
     });
     const d = await r.json();

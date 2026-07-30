@@ -15,6 +15,7 @@ def test_defaults_when_file_missing(tmp_path):
     s = load_settings(tmp_path / "nope.toml")
     assert s.subtitle_root is None and s.media_root is None
     assert s.resolution == "720p" and s.quality == "medium"
+    assert s.container == "mp4" and s.suffix() == ".mp4"
     assert s.subtitle_root_path() is None and s.media_root_path() is None
 
 
@@ -44,10 +45,20 @@ def test_windows_backslash_path_survives_round_trip(tmp_path):
 def test_invalid_enums_clamp_to_defaults(tmp_path):
     path = tmp_path / "clipper.toml"
     path.write_text(
-        '[output]\nresolution = "8k"\nquality = "ultra"\n', encoding="utf-8"
+        '[output]\nresolution = "8k"\nquality = "ultra"\ncontainer = "avi"\n',
+        encoding="utf-8",
     )
     s = load_settings(path)
     assert s.resolution == "720p" and s.quality == "medium"
+    # An unsupported container must never reach ffmpeg as an output suffix.
+    assert s.container == "mp4" and s.suffix() == ".mp4"
+
+
+def test_container_round_trips_and_drives_the_suffix(tmp_path):
+    path = tmp_path / "clipper.toml"
+    save_settings(ClipperSettings(container="mkv"), path)
+    s = load_settings(path)
+    assert s.container == "mkv" and s.suffix() == ".mkv"
 
 
 def test_empty_media_root_is_none(tmp_path):

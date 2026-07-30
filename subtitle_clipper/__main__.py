@@ -143,13 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--json", metavar="FILE", help="also write results to FILE")
     pq.set_defaults(func=cmd_search)
 
-    pg = sub.add_parser("generate", help="cut a search result into one stitched MKV")
+    pg = sub.add_parser("generate", help="cut a search result into one stitched clip")
     pg.add_argument("--from", dest="from_", default="last",
                     help="'last' (default) or a JSON file from `search --json`")
     pg.add_argument("--select", help="1-based indices/ranges, e.g. 1,3,5-8")
     pg.add_argument("--pad", type=float, default=DEFAULT_PAD_S,
                     help="seconds of padding around each line (default 0.5)")
-    pg.add_argument("--out", type=Path, default=Path("clips") / "clip.mkv")
+    pg.add_argument("--out", type=Path, default=Path("clips") / "clip.mp4",
+                    help="output file; its extension picks the container (.mp4/.mkv)")
     pg.set_defaults(func=cmd_generate)
     return p
 
