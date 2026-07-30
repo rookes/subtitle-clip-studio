@@ -184,6 +184,8 @@ mark {
 }
 .results-bar label { display: inline-flex; align-items: center; gap: 0.35rem; }
 .results-bar .spacer { flex: 1; }
+/* Keeps ‹ Prev / page info / Next › together as one unit when the bar wraps. */
+.pager { display: inline-flex; align-items: center; gap: 0.5rem; }
 .results-bar select {
   background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
   border-radius: 6px; padding: 0.3rem 0.4rem; font: inherit;
@@ -205,7 +207,10 @@ mark {
   align-items: start;
 }
 .result .pick { padding-top: 0.2rem; }
-.result .text { font-size: 1.15rem; }
+/* Grid items default to min-width:auto, which lets long unbroken text push the
+   text column wider than its track instead of wrapping. */
+.result .meta { min-width: 0; }
+.result .text { font-size: 1.15rem; overflow-wrap: anywhere; }
 .result .sub { color: var(--muted); font-size: 0.85rem; margin-top: 0.3rem; }
 .result .path-row .link-btn { font-size: 0.82rem; }
 .badge {
@@ -298,3 +303,69 @@ mark {
 .browse-list li.dir::before { content: "📁 "; }
 .browse-list li.file::before { content: "🎬 "; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+
+/* ---------------------------------------------------------------------------
+   Phones. The desktop layout assumes a result row can afford a 260px preview
+   column beside the text; below this width it can't, so the preview controls
+   drop to their own full-width row and the text gets the whole line.
+   --------------------------------------------------------------------------- */
+@media (max-width: 720px) {
+  .page { padding: 0 0.75rem; }
+
+  /* --- header: title + gear on one line, ffmpeg warning on its own --- */
+  header { flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.75rem 0; }
+  header h1 { font-size: 1.05rem; flex: 1; min-width: 0; }
+  header .spacer { display: none; }
+  #ffmpeg-warn { order: 4; flex-basis: 100%; font-size: 0.78rem; }
+  .settings-menu { width: min(360px, calc(100vw - 1.5rem)); padding: 0.8rem; }
+
+  /* --- dataset bar: the three loaders share a full-width row --- */
+  .dataset-bar { gap: 0.4rem 0.5rem; padding: 0.5rem 0.6rem; }
+  .dataset-load { width: 100%; }
+  .dataset-load button { flex: 1; min-width: 0; }
+  #ds-back { width: 100%; }
+
+  /* --- search form: query keeps the Search button beside it --- */
+  #search-form .row { gap: 0.5rem; }
+  #search-form .row:first-child { flex-wrap: nowrap; }
+  #query { flex: 1; min-width: 0; }
+  .row.options { gap: 0.4rem 0.9rem; }
+  /* the show include/exclude filters need the full width to be typeable */
+  .row.options .filter { display: flex; width: 100%; }
+  .row.options .filter input { flex: 1; min-width: 0; }
+
+  /* --- generate bar --- */
+  .gen-bar { gap: 0.6rem 0.75rem; padding: 0.7rem 0.75rem; }
+  .gen-bar label { min-width: 0; }
+  .gen-bar .wide-label { width: 100%; }
+  .gen-bar .wide { flex: 1; width: auto; min-width: 0; }
+  #generate-btn { width: 100%; }
+
+  /* --- results bar: pagination stays on one line --- */
+  .results-bar .spacer { display: none; }
+  .pager { width: 100%; justify-content: space-between; }
+
+  /* --- result rows --- */
+  .result { padding: 0.7rem 0.75rem; }
+  .result-row { grid-template-columns: auto minmax(0, 1fr); gap: 0.5rem 0.6rem; }
+  .result .text { font-size: 1.05rem; }
+  /* full-width row under the text, so nothing runs off the right edge */
+  .preview {
+    grid-column: 1 / -1;
+    min-width: 0;
+    flex-direction: row; flex-wrap: wrap; align-items: center;
+    text-align: left;
+  }
+  .preview .preview-btn, .preview .expand-btn { flex: 1; min-width: 0; }
+  .preview video { width: 100%; flex-basis: 100%; margin-top: 0; }
+
+  /* --- timing editor --- */
+  .timing-row { gap: 0.5rem 1rem; }
+  .timing-row input[type=text] { width: 7.5rem; }
+  /* cue text gets its own line below the timestamp and row buttons */
+  .line { flex-wrap: wrap; gap: 0.35rem; }
+  .line-time { flex: 1; }
+  .line-text { flex-basis: 100%; order: 5; min-width: 0; }
+
+  .modal-box { width: calc(100vw - 1.5rem); padding: 1rem; }
+}

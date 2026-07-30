@@ -90,8 +90,8 @@
       <label><input type="checkbox" id="ai"> Include AI subs</label>
     </div>
     <div class="row options">
-      <label>Only shows <input type="text" id="only-shows" placeholder="comma,separated"></label>
-      <label>Exclude shows <input type="text" id="exclude-shows" placeholder="comma,separated"></label>
+      <label class="filter">Only shows <input type="text" id="only-shows" placeholder="comma,separated"></label>
+      <label class="filter">Exclude shows <input type="text" id="exclude-shows" placeholder="comma,separated"></label>
     </div>
   </form>
 
@@ -99,13 +99,13 @@
 
   <div id="gen-bar" class="gen-bar" hidden>
     <label>Pad (s) <input type="number" id="pad" value="0.5" min="0" max="10" step="0.1" class="num"></label>
-    <label>Output name <input type="text" id="out-name" value="clip" class="wide"><span
+    <label class="wide-label">Output name <input type="text" id="out-name" value="clip" class="wide"><span
         id="out-ext" class="out-ext" title="set the format in Settings ⚙">.mp4</span></label>
     <label class="sep-toggle"><input type="checkbox" id="separate-files"> One file per clip</label>
     <label class="zip-toggle" hidden><input type="checkbox" id="zip-bundle"> Bundle as .zip</label>
     <label class="burn-toggle"><input type="checkbox" id="burn-in" checked> Burn in subtitles</label>
     <div id="burn-opts" class="burn-opts">
-      <label>Font
+      <label class="wide-label">Font
         <input type="text" id="burn-font" list="font-suggestions" value="Arial" class="wide">
         <datalist id="font-suggestions">
           <option value="Arial">
@@ -135,9 +135,11 @@
         <option value="100">100</option>
       </select>
     </label>
-    <button id="prev-page" type="button">‹ Prev</button>
-    <span id="page-info" class="muted"></span>
-    <button id="next-page" type="button">Next ›</button>
+    <span class="pager">
+      <button id="prev-page" type="button">‹ Prev</button>
+      <span id="page-info" class="muted"></span>
+      <button id="next-page" type="button">Next ›</button>
+    </span>
   </div>
 
   <ul id="results"></ul>
