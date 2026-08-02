@@ -38,6 +38,14 @@ class Match:
     # Each is a plain dict (see _version_dict); the top-level fields above mirror
     # versions[0]. Length 1 when only one version exists for the line.
     versions: tuple[dict, ...] = ()
+    # A merged run of bookmarked lines (see datasets.group_bookmark_indices) is
+    # ONE list entry spanning several cues — the cues stay separate, exactly as
+    # when a user widens a window to pull neighbouring lines in. The fields above
+    # describe the entry's FIRST line; these describe the run: ``group_end`` is
+    # the last line's end and ``group_lines`` every line's text (for display).
+    # Empty/None for an ordinary single-line result.
+    group_end: float | None = None
+    group_lines: tuple[str, ...] = ()
 
     @property
     def has_video(self) -> bool:
@@ -48,6 +56,7 @@ class Match:
         d["episodes"] = list(self.episodes)
         d["has_video"] = self.has_video
         d["versions"] = [dict(v) for v in self.versions]
+        d["group_lines"] = list(self.group_lines)
         return d
 
     # note: display_name is read from the dict in from_dict below
@@ -71,6 +80,8 @@ class Match:
             sync_variant_key=d.get("sync_variant_key", ""),
             display_name=d.get("display_name"),
             versions=tuple(d.get("versions") or ()),
+            group_end=d.get("group_end"),
+            group_lines=tuple(d.get("group_lines") or ()),
         )
 
 
@@ -119,8 +130,55 @@ def _show_filtered(rec: EpisodeRecord, exclude: frozenset[str], only: frozenset[
     return False
 
 
-def _match_of(rec: EpisodeRecord, cue: Cue, status: str,
-              versions: tuple[dict, ...] = ()) -> Match:
+@dataclass(frozen=True)
+class _Entry:
+    """One searchable list entry: a cue, plus the merged run it anchors (if any).
+
+    ``cue`` is the entry's first line — the one whose timing/text the Match
+    reports. ``group`` is None for an ordinary result, or every cue of the run
+    (the first one included) when several bookmarked lines share one entry. The
+    cues are never fused: the run is described by its span and its lines.
+    """
+    rec: EpisodeRecord
+    cue: Cue
+    status: str
+    group: tuple[Cue, ...] | None = None
+
+    @property
+    def group_end(self) -> float | None:
+        return self.group[-1].end if self.group else None
+
+    @property
+    def group_lines(self) -> tuple[str, ...]:
+        return tuple(c.text for c in self.group) if self.group else ()
+
+
+def _entries(rec: EpisodeRecord, cues: list[Cue], status: str, predicate
+             ) -> list[_Entry]:
+    """The record's entries that satisfy ``predicate``, in file order.
+
+    Normally one entry per matching cue, restricted to ``rec.cue_ids`` when set.
+    A record with ``cue_groups`` (merged SubtitleEdit bookmarks) instead yields
+    one entry per group, kept when ANY of its lines matches, so a merged run
+    stays a single list item however the query hits it.
+    """
+    if rec.cue_groups:
+        by_index = {c.index: c for c in cues}
+        out: list[_Entry] = []
+        for group in rec.cue_groups:
+            members = tuple(by_index[i] for i in group if i in by_index)
+            if not members or not any(predicate(c.text) for c in members):
+                continue
+            out.append(_Entry(rec, members[0], status,
+                              group=members if len(members) > 1 else None))
+        return out
+    allowed = set(rec.cue_ids) if rec.cue_ids is not None else None
+    return [_Entry(rec, c, status) for c in cues
+            if (allowed is None or c.index in allowed) and predicate(c.text)]
+
+
+def _match_of(entry: _Entry, versions: tuple[dict, ...] = ()) -> Match:
+    rec, cue = entry.rec, entry.cue
     return Match(
         episode_id=rec.episode_id,
         show_slug=rec.show_slug,
@@ -133,15 +191,18 @@ def _match_of(rec: EpisodeRecord, cue: Cue, status: str,
         text=cue.text,
         srt_path=rec.srt_path,
         media_path=rec.media_path,
-        media_status=status,
+        media_status=entry.status,
         source=rec.source,
         sync_variant_key=rec.sync_variant_key,
         display_name=rec.display_name,
         versions=versions,
+        group_end=entry.group_end,
+        group_lines=entry.group_lines,
     )
 
 
-def _version_dict(rec: EpisodeRecord, cue: Cue, status: str) -> dict:
+def _version_dict(entry: _Entry) -> dict:
+    rec, cue = entry.rec, entry.cue
     return {
         "source": rec.source,
         "episode_id": rec.episode_id,
@@ -151,11 +212,13 @@ def _version_dict(rec: EpisodeRecord, cue: Cue, status: str) -> dict:
         "text": cue.text,
         "srt_path": rec.srt_path,
         "media_path": rec.media_path,
-        "media_status": status,
+        "media_status": entry.status,
         "season": rec.season,
         "episodes": list(rec.episodes),
-        "has_video": status == "video",
+        "has_video": entry.status == "video",
         "display_name": rec.display_name,
+        "group_end": entry.group_end,
+        "group_lines": list(entry.group_lines),
     }
 
 
@@ -163,45 +226,42 @@ def _norm(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _slots_for_variant(entries: list[tuple[EpisodeRecord, Cue, str]]) -> list[Match]:
-    """Collapse one episode's matching cues (across its versions) into per-line
-    slots. Versions are aligned by identical text and occurrence order: the k-th
-    "係喎" in BD pairs with the k-th "係喎" in DVD. Each slot becomes one Match
-    whose ``versions`` lists the versions that have that line, preferred first.
+def _slots_for_variant(entries: list[_Entry]) -> list[Match]:
+    """Collapse one episode's matching entries (across its versions) into
+    per-line slots. Versions are aligned by identical text and occurrence order:
+    the k-th "係喎" in BD pairs with the k-th "係喎" in DVD. Each slot becomes one
+    Match whose ``versions`` lists the versions that have that line, preferred
+    first. A merged bookmark entry aligns on its whole text, so it stays one slot.
     """
     # Group the raw entries by version (episode_id), preserving first-seen order.
-    by_version: dict[str, dict] = {}
+    by_version: dict[str, list[_Entry]] = {}
     version_order: list[str] = []
-    for rec, cue, status in entries:
-        v = by_version.get(rec.episode_id)
-        if v is None:
-            v = {"rec": rec, "status": status, "cues": []}
-            by_version[rec.episode_id] = v
-            version_order.append(rec.episode_id)
-        v["cues"].append(cue)
+    for entry in entries:
+        eid = entry.rec.episode_id
+        if eid not in by_version:
+            by_version[eid] = []
+            version_order.append(eid)
+        by_version[eid].append(entry)
 
-    slots: dict[tuple[str, int], dict] = {}     # (norm_text, ordinal) -> source -> (rec,cue,status)
+    slots: dict[tuple[str, int], dict[str, _Entry]] = {}   # (norm_text, ordinal) -> source -> entry
     slot_order: list[tuple[str, int]] = []
     for eid in version_order:
-        v = by_version[eid]
-        v["cues"].sort(key=lambda c: c.start)
+        version_entries = sorted(by_version[eid], key=lambda e: e.cue.start)
         counts: dict[str, int] = {}
-        for cue in v["cues"]:
-            nt = _norm(cue.text)
+        for entry in version_entries:
+            nt = _norm("\n".join(entry.group_lines) or entry.cue.text)
             ordi = counts.get(nt, 0)
             counts[nt] = ordi + 1
             key = (nt, ordi)
             if key not in slots:
                 slots[key] = {}
                 slot_order.append(key)
-            slots[key][v["rec"].source or ""] = (v["rec"], cue, v["status"])
+            slots[key][entry.rec.source or ""] = entry
 
     matches: list[Match] = []
     for key in slot_order:
-        ordered = sorted(slots[key].values(), key=lambda t: variant_rank(t[0].source))
-        rep_rec, rep_cue, rep_status = ordered[0]
-        version_dicts = tuple(_version_dict(r, c, s) for r, c, s in ordered)
-        matches.append(_match_of(rep_rec, rep_cue, rep_status, version_dicts))
+        ordered = sorted(slots[key].values(), key=lambda e: variant_rank(e.rec.source))
+        matches.append(_match_of(ordered[0], tuple(_version_dict(e) for e in ordered)))
     return matches
 
 
@@ -222,7 +282,9 @@ def search(
     ``allow_empty`` makes an empty ``query`` match every cue (used by custom
     datasets so an empty search lists the whole loaded source). A record whose
     ``cue_ids`` is set restricts matching to those 0-based cue indices (the
-    SubtitleEdit-bookmarks case, where only bookmarked lines are searchable).
+    SubtitleEdit-bookmarks case, where only bookmarked lines are searchable);
+    one whose ``cue_groups`` is set additionally returns each merged run of
+    bookmarked lines as a single result (see :func:`_entries`).
 
     ``require_media`` keeps only matches whose linked media has a video stream
     (missing / audio-only / unlinked are dropped).
@@ -255,18 +317,15 @@ def search(
             status = media_status(rec, corpus.media_root)
             if require_media and status != "video":
                 continue
-            allowed = set(rec.cue_ids) if rec.cue_ids is not None else None
-            for cue in _cued(corpus.srt_abspath(rec)):
-                if allowed is not None and cue.index not in allowed:
-                    continue
-                if predicate(cue.text):
-                    results.append(_match_of(rec, cue, status))
-                    if len(results) >= top:
-                        return results
+            for entry in _entries(rec, _cued(corpus.srt_abspath(rec)), status,
+                                  predicate):
+                results.append(_match_of(entry))
+                if len(results) >= top:
+                    return results
         return results
 
-    # Grouped: gather every matching cue by episode identity, then form slots.
-    by_variant: dict[str, list[tuple[EpisodeRecord, Cue, str]]] = {}
+    # Grouped: gather every matching entry by episode identity, then form slots.
+    by_variant: dict[str, list[_Entry]] = {}
     variant_order: list[str] = []
     for rec in corpus.records:
         if _show_filtered(rec, exclude, only):
@@ -274,17 +333,12 @@ def search(
         status = media_status(rec, corpus.media_root)
         if require_media and status != "video":
             continue
-        allowed = set(rec.cue_ids) if rec.cue_ids is not None else None
-        for cue in _cued(corpus.srt_abspath(rec)):
-            if allowed is not None and cue.index not in allowed:
-                continue
-            if not predicate(cue.text):
-                continue
+        for entry in _entries(rec, _cued(corpus.srt_abspath(rec)), status, predicate):
             key = rec.sync_variant_key
             if key not in by_variant:
                 by_variant[key] = []
                 variant_order.append(key)
-            by_variant[key].append((rec, cue, status))
+            by_variant[key].append(entry)
 
     grouped: list[Match] = []
     for key in variant_order:

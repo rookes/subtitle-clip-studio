@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from subtitle_clipper.settings import (
+    MAX_BOOKMARK_MERGE,
     QUALITY_CRF,
     RESOLUTIONS,
     ClipperSettings,
@@ -71,6 +72,23 @@ def test_dimensions_and_crf_mapping():
     assert ClipperSettings(resolution="480p").dimensions() == RESOLUTIONS["480p"]
     assert ClipperSettings(quality="high").crf() == QUALITY_CRF["high"]
     assert ClipperSettings(quality="low").crf() > ClipperSettings(quality="high").crf()
+
+
+def test_bookmark_merge_round_trips(tmp_path):
+    path = tmp_path / "clipper.toml"
+    assert load_settings(tmp_path / "nope.toml").bookmark_merge == 1
+    save_settings(ClipperSettings(bookmark_merge=3), path)
+    assert load_settings(path).bookmark_merge == 3
+
+
+def test_bookmark_merge_clamps_out_of_range_values(tmp_path):
+    path = tmp_path / "clipper.toml"
+    for written, expected in ((0, 1), (-4, 1), (1000, MAX_BOOKMARK_MERGE)):
+        path.write_text(f"[bookmarks]\nmerge_threshold = {written}\n", encoding="utf-8")
+        assert load_settings(path).bookmark_merge == expected
+    # A non-numeric value falls back to the default rather than raising.
+    path.write_text('[bookmarks]\nmerge_threshold = "lots"\n', encoding="utf-8")
+    assert load_settings(path).bookmark_merge == 1
 
 
 def test_malformed_toml_returns_defaults(tmp_path):

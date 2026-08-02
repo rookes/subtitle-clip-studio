@@ -261,7 +261,10 @@ def generate(
         for idx, (item, src) in enumerate(plan):
             m = item.match
             win_start = item.win_start if item.win_start is not None else max(0.0, m.start - pad_s)
-            win_end = item.win_end if item.win_end is not None else m.end + pad_s
+            # A merged bookmark run spans several lines, so the default window
+            # pads the whole entry, not just its first line.
+            entry_end = m.group_end if m.group_end is not None else m.end
+            win_end = item.win_end if item.win_end is not None else entry_end + pad_s
             seg_file = work / f"seg{idx:04d}.mkv"
             cut_segment(src, win_start, win_end, seg_file,
                         audio_track=_select_audio_track(src), spec=spec)

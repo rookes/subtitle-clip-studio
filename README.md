@@ -25,6 +25,10 @@ https://github.com/user-attachments/assets/0a4e2606-e91b-44fd-bcec-83e1f44cc103
 - Export one stitched video, or one file per line as a zip.
 - Load a directory of SRT files, a single SRT file, or a SubtitleEdit bookmarks file (.SE.bookmarks) to
   be clipped.
+- Bookmarks on neighbouring lines are listed as one entry, padded as a whole, with each line kept as
+  its own subtitle. Settings ⚙ sets how far apart bookmarks may be and still share an entry: at the
+  default of 1 only back-to-back bookmarks merge, while e.g. 3 turns bookmarks on lines 10, 11, 14,
+  18 and 20 into two entries (10–14 and 18–20), taking in the unbookmarked lines between them.
 
 ## Quickstart
 

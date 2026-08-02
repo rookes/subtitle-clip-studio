@@ -9,11 +9,13 @@ server installs as a temporary override:
     against the master corpus so recognised episodes keep their show name / season
     / episode (and linked media); unrecognised files fall back to the filename.
   * a SubtitleEdit ``.SE.bookmarks`` file — only the bookmarked lines of its
-    paired SRT are loaded.
+    paired SRT are loaded, with runs of nearby bookmarks merged into one entry
+    (see :func:`group_bookmark_indices`).
 
 Everything downstream (search / preview / generate) is unchanged: these just
-produce ordinary ``EpisodeRecord`` objects, with the two custom-only fields
-``display_name`` and ``cue_ids`` (see :class:`EpisodeRecord`) doing the extra work.
+produce ordinary ``EpisodeRecord`` objects, with the custom-only fields
+``display_name``, ``cue_ids`` and ``cue_groups`` (see :class:`EpisodeRecord`)
+doing the extra work.
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ from .manifest import (
 from .srt import SrtParseError, parse_srt
 
 BOOKMARKS_SUFFIX = ".SE.bookmarks"
+# Bookmarks this many lines apart (or closer) belong to the same entry. 1 = only
+# back-to-back bookmarks merge; see group_bookmark_indices.
+DEFAULT_MERGE_THRESHOLD = 1
 
 
 class DatasetError(ValueError):
@@ -141,7 +146,9 @@ def load_directory(path: Path | str, master: Corpus | None) -> tuple[Corpus, str
     return corpus, f"{path.name} ({len(records)} file(s))"
 
 
-def load_bookmarks(path: Path | str, master: Corpus | None) -> tuple[Corpus, str]:
+def load_bookmarks(path: Path | str, master: Corpus | None, *,
+                   merge_threshold: int = DEFAULT_MERGE_THRESHOLD
+                   ) -> tuple[Corpus, str]:
     path = Path(path)
     if not path.is_file():
         raise DatasetError(f"Not a file: {path}")
@@ -165,14 +172,43 @@ def load_bookmarks(path: Path | str, master: Corpus | None) -> tuple[Corpus, str
             cue_ids.append(by_number[idx + 1])
         elif 0 <= idx < len(cues):         # fallback: idx as 0-based position
             cue_ids.append(cues[idx].index)
-    cue_ids = sorted(set(cue_ids))
+    bookmarked = sorted(set(cue_ids))
+    # Runs of nearby bookmarks become one entry each; the record then carries
+    # every line those entries cover (bookmarked or filled in between).
+    groups = group_bookmark_indices(bookmarked, merge_threshold)
 
     eid = f"custom_bm_{slugify(srt_path.stem)}"
     rec = _episode_record(srt_path.name, srt_path.name, eid, master)
-    rec.cue_ids = cue_ids
+    rec.cue_ids = [i for g in groups for i in g]
+    rec.cue_groups = groups
     media_root = master.media_root if master is not None else None
     corpus = Corpus(records=[rec], corpus_root=srt_path.parent, media_root=media_root)
-    return corpus, f"{name} ({len(cue_ids)} bookmark(s))"
+    return corpus, _bookmarks_label(name, len(bookmarked), len(groups))
+
+
+def group_bookmark_indices(cue_ids: list[int], threshold: int) -> list[list[int]]:
+    """Group bookmarked cue indices into one list of indices per list entry.
+
+    Two bookmarks belong to the same entry when no more than ``threshold``
+    lines apart, and the unbookmarked lines between them are pulled in so the
+    entry is a contiguous run. With the default threshold of 1 only back-to-back
+    bookmarks merge (``10, 11`` -> one entry ``[10, 11]``); with ``threshold=3``
+    ``{10, 11, 14, 18, 20}`` becomes ``[10…14]`` and ``[18…20]``.
+    """
+    threshold = max(1, int(threshold))
+    groups: list[list[int]] = []
+    for idx in sorted(set(cue_ids)):
+        if groups and idx - groups[-1][-1] <= threshold:
+            groups[-1].extend(range(groups[-1][-1] + 1, idx + 1))
+        else:
+            groups.append([idx])
+    return groups
+
+
+def _bookmarks_label(name: str, bookmarks: int, entries: int) -> str:
+    merged = "" if entries == bookmarks else \
+        f" → {entries} entr{'y' if entries == 1 else 'ies'}"
+    return f"{name} ({bookmarks} bookmark(s){merged})"
 
 
 # --- helpers -----------------------------------------------------------------

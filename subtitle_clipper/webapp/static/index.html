@@ -57,6 +57,20 @@
             </label>
           </div>
         </div>
+        <div class="settings-section">
+          <div class="settings-label">Bookmarks</div>
+          <div class="settings-row">
+            <label>Merge bookmarks within
+              <input type="number" id="set-bookmark-merge" value="1" min="1" max="99" class="num">
+              line(s)
+            </label>
+          </div>
+          <div class="settings-hint">
+            Bookmarked lines this close become one list entry, with the lines
+            between them included. 1 merges only back-to-back bookmarks. Applied
+            when a .SE.bookmarks file is loaded.
+          </div>
+        </div>
         <div class="settings-actions">
           <button type="button" id="settings-save">Save</button>
           <button type="button" id="settings-refresh" class="secondary"
@@ -153,6 +167,7 @@
           <div class="sub">
             <span class="show link-text" role="button" tabindex="0" title="click to re-link this series to a folder"></span><span
               class="sep sep-ep"> · </span><span class="ep"></span><span class="sep sep-time"> · </span><span class="time"></span>
+            <span class="group-tag" hidden title="bookmarked lines merged into one entry (see Settings ⚙)"></span>
             <select class="version" hidden title="choose which release/version to use"></select>
             <span class="badge"></span>
             <span class="edited-mark" hidden title="timing manually edited">✎ edited</span>

@@ -88,6 +88,9 @@ class EpisodeRecord:
     # Custom-dataset extras (unused by the master corpus scan):
     display_name: str | None = None  # filename to show instead of show/episode
     cue_ids: list[int] | None = None  # 0-based Cue.index allow-list (bookmarks)
+    # Bookmarked lines grouped into one list of cue indices per search result
+    # (a merged run of bookmarks). When set it supersedes cue_ids for searching.
+    cue_groups: list[list[int]] | None = None
 
 
 @dataclass

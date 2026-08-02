@@ -19,7 +19,9 @@ from ..ffmpeg import BurnStyle, NormSpec, ffmpeg_available, preview
 from ..search import Match, _cued, search
 from ..settings import (
     CONTAINERS,
+    DEFAULT_BOOKMARK_MERGE,
     DEFAULT_CONTAINER,
+    MAX_BOOKMARK_MERGE,
     QUALITY_CRF,
     RESOLUTIONS,
     ClipperSettings,
@@ -52,6 +54,7 @@ class _State:
         self._custom: Corpus | None = None
         self._custom_kind: str | None = None
         self._custom_label: str | None = None
+        self._custom_path: Path | None = None
 
     def corpus(self, *, ai: bool, rescan: bool = False) -> Corpus:
         # A custom dataset short-circuits the master reload — it's already resolved
@@ -86,12 +89,14 @@ class _State:
             self._corpus = None
             self._by_id = {}
 
-    def install_custom(self, corpus: Corpus, kind: str, label: str) -> None:
+    def install_custom(self, corpus: Corpus, kind: str, label: str,
+                       path: Path | None = None) -> None:
         """Make ``corpus`` the active dataset for search/preview/generate."""
         with self._lock:
             self._custom = corpus
             self._custom_kind = kind
             self._custom_label = label
+            self._custom_path = path
             self._corpus = corpus
             self._by_id = {r.episode_id: r for r in corpus.records}
 
@@ -101,11 +106,18 @@ class _State:
             self._custom = None
             self._custom_kind = None
             self._custom_label = None
+            self._custom_path = None
             self._corpus = None
             self._by_id = {}
 
     def is_custom(self) -> bool:
         return self._custom is not None
+
+    def custom_source(self) -> tuple[str | None, Path | None]:
+        """The active custom dataset's (kind, path), so it can be reloaded when a
+        setting that shaped it changes."""
+        with self._lock:
+            return self._custom_kind, self._custom_path
 
     def dataset_info(self) -> dict:
         with self._lock:
@@ -276,12 +288,15 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             elif mode == "dir":
                 corpus, label = datasets.load_directory(path, state.master_corpus())
             elif mode == "bookmarks":
-                corpus, label = datasets.load_bookmarks(path, state.master_corpus())
+                corpus, label = datasets.load_bookmarks(
+                    path, state.master_corpus(),
+                    merge_threshold=load_settings().bookmark_merge,
+                )
             else:
                 return jsonify(error=f"unknown dataset mode: {mode}"), 400
         except datasets.DatasetError as e:
             return jsonify(error=str(e)), 400
-        state.install_custom(corpus, mode, label)
+        state.install_custom(corpus, mode, label, path)
         return jsonify(ok=True, kind=mode, label=label, count=len(corpus.records))
 
     @app.post("/api/dataset/master")
@@ -417,9 +432,11 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             resolution=s.resolution,
             quality=s.quality,
             container=s.container,
+            bookmark_merge=s.bookmark_merge,
             resolutions=list(RESOLUTIONS),
             qualities=list(QUALITY_CRF),
             containers=list(CONTAINERS),
+            max_bookmark_merge=MAX_BOOKMARK_MERGE,
             effective_subtitle_root=str(eff_sub) if eff_sub else None,
             effective_media_root=str(eff_media) if eff_media else None,
             path=str(settings_path()),
@@ -434,12 +451,18 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
             resolution=str(body.get("resolution", "720p")),
             quality=str(body.get("quality", "medium")),
             container=str(body.get("container", DEFAULT_CONTAINER)),
+            bookmark_merge=_int_or(body.get("bookmark_merge"),
+                                   DEFAULT_BOOKMARK_MERGE),
         )
         # load_settings() clamps invalid enums to defaults; round-trip so the
         # saved file (and the response) always reflect validated values.
         path = save_settings(s)
         state.invalidate()
-        return jsonify(ok=True, path=str(path), **_settings_payload())
+        # The bookmark grouping is baked in when the file is read, so an active
+        # bookmarks dataset has to be re-read for a new threshold to show up.
+        reloaded = _reload_bookmarks_dataset()
+        return jsonify(ok=True, path=str(path), dataset=reloaded,
+                       **_settings_payload())
 
     @app.post("/api/refresh")
     def api_refresh():
@@ -456,7 +479,23 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
         s = load_settings()
         return {"subtitle_root": s.subtitle_root or "", "media_root": s.media_root or "",
                 "resolution": s.resolution, "quality": s.quality,
-                "container": s.container}
+                "container": s.container, "bookmark_merge": s.bookmark_merge}
+
+    def _reload_bookmarks_dataset() -> dict | None:
+        """Re-read the active .SE.bookmarks dataset (if any) with the settings as
+        they stand now. Returns the new dataset info, or None if nothing to do."""
+        kind, path = state.custom_source()
+        if kind != "bookmarks" or path is None:
+            return None
+        try:
+            corpus, label = datasets.load_bookmarks(
+                path, state.master_corpus(),
+                merge_threshold=load_settings().bookmark_merge,
+            )
+        except datasets.DatasetError:
+            return None      # file moved/changed since it was loaded; keep the old one
+        state.install_custom(corpus, kind, label, path)
+        return state.dataset_info()
 
     return app
 
@@ -474,6 +513,14 @@ def _highlights(raw) -> tuple[tuple[int, int], ...]:
         except (TypeError, ValueError, IndexError, KeyError):
             continue
     return tuple(out)
+
+
+def _int_or(value, default: int) -> int:
+    """Coerce a JSON field to int; settings.load_settings clamps the range."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _safe_name(name: str, suffix: str = ".mp4") -> str:

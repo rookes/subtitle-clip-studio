@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from subtitle_clipper import clips
-from subtitle_clipper.clips import ClipRequest
+from subtitle_clipper.clips import ClipRequest, CueEntry
 from subtitle_clipper.corpus import Corpus
 from subtitle_clipper.datasets import (
     DatasetError,
+    group_bookmark_indices,
     load_bookmarks,
     load_directory,
     load_single_srt,
@@ -143,6 +144,102 @@ def test_bookmarks_not_a_bookmarks_file(tmp_path):
     srt = _write(tmp_path / "Ep.srt")
     with pytest.raises(DatasetError):
         load_bookmarks(srt, None)
+
+
+# --- merging consecutive bookmarks into one entry ----------------------------
+
+def test_group_bookmark_indices_thresholds():
+    # Default: only back-to-back bookmarks share an entry.
+    assert group_bookmark_indices([9, 10, 13, 17, 19], 1) == [[9, 10], [13], [17], [19]]
+    # Threshold 3 (the README/UI example, in 1-based line numbers: bookmarks at
+    # 10, 11, 14, 18, 20 -> entries 10–14 and 18–20) fills in the gaps.
+    assert group_bookmark_indices([9, 10, 13, 17, 19], 3) == \
+        [[9, 10, 11, 12, 13], [17, 18, 19]]
+    # Unsorted/duplicate input, and a threshold below 1, are tolerated.
+    assert group_bookmark_indices([5, 4, 4], 0) == [[4, 5]]
+    assert group_bookmark_indices([], 2) == []
+
+
+def _numbered_srt(count: int) -> str:
+    return "\n".join(f"{n}\n00:00:{n:02d},000 --> 00:00:{n:02d},500\nline {n}\n"
+                     for n in range(1, count + 1))
+
+
+def test_consecutive_bookmarks_become_one_entry(tmp_path):
+    _write(tmp_path / "Ep.srt", _numbered_srt(6))
+    bm = tmp_path / "Ep.srt.SE.bookmarks"
+    bm.write_text(_bookmarks_json([0, 1, 4]), encoding="utf-8")   # lines 1, 2, 5
+    corpus, label = load_bookmarks(bm, None)
+    clear_cache()
+    assert "3 bookmark(s)" in label and "2 entries" in label
+
+    hits = search(corpus, "", allow_empty=True, group_versions=True)
+    assert len(hits) == 2
+    merged, single = hits
+    # The merged entry is anchored on its first line and spans through the last;
+    # both lines stay separate cues, listed under group_lines.
+    assert merged.text == "line 1" and merged.start == 1.0 and merged.end == 1.5
+    assert merged.group_end == 2.5
+    assert list(merged.group_lines) == ["line 1", "line 2"]
+    # An unmerged bookmark is an ordinary single-line result.
+    assert single.text == "line 5" and single.group_end is None
+    assert single.group_lines == ()
+
+
+def test_merge_threshold_fills_in_unbookmarked_lines(tmp_path):
+    _write(tmp_path / "Ep.srt", _numbered_srt(25))
+    bm = tmp_path / "Ep.srt.SE.bookmarks"
+    bm.write_text(_bookmarks_json([9, 10, 13, 17, 19]), encoding="utf-8")
+    corpus, _ = load_bookmarks(bm, None, merge_threshold=3)
+    clear_cache()
+    hits = search(corpus, "", allow_empty=True, group_versions=True)
+    assert [(h.start, h.group_end) for h in hits] == [(10.0, 14.5), (18.0, 20.5)]
+    assert list(hits[0].group_lines) == [f"line {n}" for n in range(10, 15)]
+    assert list(hits[1].group_lines) == [f"line {n}" for n in range(18, 21)]
+    # The filled-in lines are part of the entry, so they're searchable too...
+    assert corpus.records[0].cue_ids == [9, 10, 11, 12, 13, 17, 18, 19]
+    # ...and a hit on one of them returns the whole entry, not a separate row.
+    hits = search(corpus, "line 12", group_versions=True)
+    assert len(hits) == 1 and hits[0].text == "line 10"
+
+
+def test_merged_entry_defaults_to_a_window_around_the_whole_run(tmp_path, monkeypatch):
+    _write(tmp_path / "Ep.srt", _numbered_srt(4))
+    bm = tmp_path / "Ep.srt.SE.bookmarks"
+    bm.write_text(_bookmarks_json([0, 1]), encoding="utf-8")
+    corpus, _ = load_bookmarks(bm, None)
+    clear_cache()
+    merged = search(corpus, "", allow_empty=True, group_versions=True)[0]
+
+    cuts = []
+    monkeypatch.setattr(clips, "_select_audio_track", lambda src: 0)
+    monkeypatch.setattr(clips, "cut_segment", lambda src, s, e, out, **kw: (
+        cuts.append((s, e)), Path(out).write_bytes(b"")))
+    monkeypatch.setattr(clips, "concat", lambda files, out, **kw: Path(out).write_bytes(b""))
+    monkeypatch.setattr(clips, "mux_subtitles", lambda v, s, out, **kw: Path(out).write_bytes(b""))
+
+    video = tmp_path / "ep.mkv"
+    video.write_bytes(b"")
+    # The web UI sends an explicit window plus one extra cue per further line of
+    # the entry (the same shape as manually widening a window); the lines are
+    # never fused, so each keeps its own subtitle block.
+    report = clips.generate(
+        [ClipRequest(match=merged, win_start=0.5, win_end=3.0,
+                     extra_cues=(CueEntry(2.0, 2.5, "line 2"),),
+                     video_override=str(video))],
+        None, tmp_path / "out.mkv",
+    )
+    assert cuts == [(0.5, 3.0)]
+    srt = report.srt.read_text(encoding="utf-8")
+    assert "00:00:00,500 --> 00:00:01,000\nline 1" in srt
+    assert "00:00:01,500 --> 00:00:02,000\nline 2" in srt
+
+    cuts.clear()
+    clips.generate([ClipRequest(match=merged, video_override=str(video))],
+                   None, tmp_path / "out2.mkv", pad_s=0.5)
+    # Without an explicit window, padding still wraps the whole entry (lines
+    # 1–2), not just its first line.
+    assert cuts == [(0.5, 3.0)]
 
 
 # --- cue_ids restriction in search ------------------------------------------

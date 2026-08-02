@@ -211,6 +211,15 @@ mark {
    text column wider than its track instead of wrapping. */
 .result .meta { min-width: 0; }
 .result .text { font-size: 1.15rem; overflow-wrap: anywhere; }
+/* One line per cue when several bookmarked lines share a list entry — they stay
+   separate subtitles, so the row shows them stacked rather than run together. */
+.result .text .entry-line { display: block; }
+.result .text .entry-line + .entry-line { margin-top: 0.15rem; }
+.group-tag {
+  margin-left: 0.4rem; padding: 0 0.35rem; border-radius: 4px;
+  font-size: 0.72rem; vertical-align: middle;
+  background: rgba(91,157,255,0.16); color: var(--accent);
+}
 .result .sub { color: var(--muted); font-size: 0.85rem; margin-top: 0.3rem; }
 .result .path-row .link-btn { font-size: 0.82rem; }
 .badge {

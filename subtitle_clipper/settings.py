@@ -1,7 +1,7 @@
 """Per-user Subtitle Clip Studio settings.
 
 Stored as TOML *outside* the project so the app never mutates the tracked
-config in ``config/``. A ``[media]`` and an ``[output]`` table:
+config in ``config/``. A ``[media]``, an ``[output]`` and a ``[bookmarks]`` table:
 
     [media]
     subtitle_root = "D:/Subtitles"   # overrides corpus.toml's root
@@ -11,6 +11,9 @@ config in ``config/``. A ``[media]`` and an ``[output]`` table:
     container = "mp4"              # mp4 | mkv
     resolution = "720p"            # 480p | 720p | 1080p
     quality = "medium"             # low | medium | high
+
+    [bookmarks]
+    merge_threshold = 1            # 1 = merge only back-to-back bookmarks
 
 Location: ``%APPDATA%/subtitle-clip-studio/clipper.toml`` on Windows, else
 ``$XDG_CONFIG_HOME/subtitle-clip-studio/clipper.toml`` (falling back to
@@ -44,6 +47,13 @@ DEFAULT_RESOLUTION = "720p"
 DEFAULT_QUALITY = "medium"
 DEFAULT_CONTAINER = "mp4"
 
+# How far apart two SubtitleEdit bookmarks may be and still form one list entry,
+# in subtitle lines. 1 (the default) merges only back-to-back bookmarks; higher
+# values also swallow the unbookmarked lines in between. See
+# datasets.group_bookmark_indices.
+DEFAULT_BOOKMARK_MERGE = 1
+MAX_BOOKMARK_MERGE = 99
+
 
 @dataclass(frozen=True)
 class ClipperSettings:
@@ -52,6 +62,7 @@ class ClipperSettings:
     resolution: str = DEFAULT_RESOLUTION
     quality: str = DEFAULT_QUALITY
     container: str = DEFAULT_CONTAINER
+    bookmark_merge: int = DEFAULT_BOOKMARK_MERGE   # threshold in subtitle lines
 
     def subtitle_root_path(self) -> Path | None:
         return Path(self.subtitle_root).expanduser() if self.subtitle_root else None
@@ -83,6 +94,13 @@ def _clean(value: str, allowed: dict, default: str) -> str:
     return value if value in allowed else default
 
 
+def _clean_int(value, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(value), high))
+    except (TypeError, ValueError):
+        return default
+
+
 def load_settings(path: Path | None = None) -> ClipperSettings:
     """Read settings, tolerating a missing or malformed file (returns defaults).
 
@@ -98,6 +116,7 @@ def load_settings(path: Path | None = None) -> ClipperSettings:
         return ClipperSettings()
     media = raw.get("media", {}) or {}
     output = raw.get("output", {}) or {}
+    bookmarks = raw.get("bookmarks", {}) or {}
     sub_root = (media.get("subtitle_root") or "").strip() or None
     root = (media.get("media_root") or "").strip() or None
     return ClipperSettings(
@@ -109,6 +128,9 @@ def load_settings(path: Path | None = None) -> ClipperSettings:
                        QUALITY_CRF, DEFAULT_QUALITY),
         container=_clean(str(output.get("container", DEFAULT_CONTAINER)),
                          CONTAINERS, DEFAULT_CONTAINER),
+        bookmark_merge=_clean_int(bookmarks.get("merge_threshold",
+                                                DEFAULT_BOOKMARK_MERGE),
+                                  DEFAULT_BOOKMARK_MERGE, 1, MAX_BOOKMARK_MERGE),
     )
 
 
@@ -132,6 +154,10 @@ def _dump_toml(s: ClipperSettings) -> str:
         f"container = {_toml_str(s.container)}     # mp4 | mkv",
         f"resolution = {_toml_str(s.resolution)}   # 480p | 720p | 1080p",
         f"quality = {_toml_str(s.quality)}       # low | medium | high",
+        "",
+        "[bookmarks]",
+        f"merge_threshold = {s.bookmark_merge}   # lines apart that still share "
+        "one list entry (1 = only back-to-back)",
         "",
     ])
 

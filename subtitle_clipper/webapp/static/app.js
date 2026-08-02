@@ -368,6 +368,7 @@ function versions(i) {
     start: m.start, end: m.end, text: m.text, srt_path: m.srt_path,
     media_path: m.media_path, media_status: m.media_status, has_video: m.has_video,
     season: m.season, episodes: m.episodes,
+    group_end: m.group_end, group_lines: m.group_lines,
   }];
 }
 
@@ -387,6 +388,21 @@ function activeVersion(i) {
 function targetTextOf(i) {
   const st = itemState[i];
   return st && st.targetText != null ? st.targetText : activeVersion(i).text;
+}
+
+// Loading a .SE.bookmarks file can put a run of nearby bookmarked lines into ONE
+// list entry (see the bookmark-merge setting). Such a row is anchored on the
+// run's first line — the target — and covers everything up to `group_end`; the
+// other lines are ordinary extra cues, exactly as if the user had widened the
+// window by hand, so each keeps its own timing and its own subtitle block.
+function isMerged(i) {
+  return activeVersion(i).group_end != null;
+}
+
+// Where this entry's last line ends (its own end, unless it's a merged run).
+function entryEnd(i) {
+  const av = activeVersion(i);
+  return av.group_end != null ? av.group_end : av.end;
 }
 
 function effectiveMedia(i) {
@@ -551,6 +567,7 @@ function buildRow(node, i) {
     epEl: node.querySelector(".ep"),
     epSep: node.querySelector(".sep-ep"),
     timeEl: node.querySelector(".time"),
+    groupTag: node.querySelector(".group-tag"),
     versionSel: node.querySelector(".version"),
     badge: node.querySelector(".badge"),
     editedMark: node.querySelector(".edited-mark"),
@@ -615,7 +632,7 @@ function buildRow(node, i) {
     label.querySelector(".nudge-down").addEventListener("click", () => nudgeWin(i, which, -1));
   }
 
-  refs.timeEl.textContent = fmtTime(activeVersion(i).start);
+  renderTimeLabel(i);
   renderHeaderText(i);
   updateRowMediaDisplay(i);
 
@@ -669,7 +686,7 @@ function onVersionChange(i, source) {
   st.selected = effectiveMedia(i).hasVideo;
 
   const refs = rowRefs[i];
-  refs.timeEl.textContent = fmtTime(activeVersion(i).start);
+  renderTimeLabel(i);
   renderHeaderText(i);
   updateRowMediaDisplay(i);
   if (st.expanded) { ensureWindow(i).then(() => renderTiming(i)); }
@@ -678,15 +695,52 @@ function onVersionChange(i, source) {
   updateSelCount();
 }
 
+// Every line this entry covers, in timeline order. Empty for an ordinary
+// single-line result. Once the editor's cues are loaded these come from the live
+// cue list (so edits and removals show up); before that, from the search payload.
+function entryLines(i) {
+  const av = activeVersion(i);
+  const st = itemState[i];
+  if (av.group_end == null) return [];
+  if (st && st.winComputed) {
+    return [{ start: av.start, text: targetTextOf(i) }]
+      .concat(st.extraCues
+        .filter((e) => e.start >= av.start - EPS && e.end <= av.group_end + EPS)
+        .map((e) => ({ start: e.start, text: e.text })))
+      .sort((a, b) => a.start - b.start)
+      .map((l) => l.text);
+  }
+  return av.group_lines || [];
+}
+
 function renderHeaderText(i) {
   const refs = rowRefs[i];
   if (!refs) return;
   const st = itemState[i];
-  if (st && st.targetText != null) {
+  // A merged entry lists its lines one per row, so it reads like the clip it
+  // will produce — they stay separate cues, they're just shown together.
+  const lines = entryLines(i);
+  if (lines.length > 1) {
+    refs.textEl.innerHTML = lines
+      .map((t) => `<span class="entry-line">${highlight(t, lastQuery, lastRegex)}</span>`)
+      .join("");
+  } else if (st && st.targetText != null) {
     refs.textEl.textContent = st.targetText;
   } else {
     refs.textEl.innerHTML = highlight(activeVersion(i).text, lastQuery, lastRegex);
   }
+}
+
+// The time column: a start for a single line, a span for a merged run.
+function renderTimeLabel(i) {
+  const refs = rowRefs[i];
+  const av = activeVersion(i);
+  refs.timeEl.textContent = isMerged(i)
+    ? `${fmtTime(av.start)} – ${fmtTime(av.group_end)}`
+    : fmtTime(av.start);
+  const count = (av.group_lines || []).length;
+  refs.groupTag.hidden = count < 2;
+  refs.groupTag.textContent = count < 2 ? "" : `⧉ ${count} lines`;
 }
 
 function updateRowMediaDisplay(i) {
@@ -898,9 +952,11 @@ async function ensureEpisodeCues(episodeId) {
 
 // Compute the default cut window and auto-included lines for a result that the
 // user hasn't hand-edited. Runs once (lazily) per result: on render, on expand,
-// and before generation. The default is [start-pad, end+pad], but if that start
-// lands in the MIDDLE of a neighboring subtitle, the window is extended back to
-// that line's start so the line is shown whole (not counted as a manual edit).
+// and before generation. The default is [start-pad, entryEnd+pad] — the same
+// padding for a merged bookmark run as for a single line, just around the whole
+// run — but if that start lands in the MIDDLE of a neighboring subtitle, the
+// window is extended back to that line's start so the line is shown whole (not
+// counted as a manual edit).
 async function ensureWindow(i) {
   const state = itemState[i];
   if (state.winComputed || state.winStart != null) { state.winComputed = true; return; }
@@ -908,7 +964,7 @@ async function ensureWindow(i) {
   const cues = await ensureEpisodeCues(av.episode_id);
   const pad = currentPad();
   let winStart = Math.max(0, av.start - pad);
-  const winEnd = av.end + pad;
+  const winEnd = entryEnd(i) + pad;
   for (const c of cues) {
     if (c.cue_index === av.cue_index) continue;
     // straddles the padded start → pull the window back to include it whole
@@ -918,11 +974,16 @@ async function ensureWindow(i) {
   }
   state.winStart = winStart;
   state.winEnd = winEnd;
-  recomputeExtras(i, { forward: false });
+  // A merged run's own following lines come in as extras (that's what makes the
+  // row one entry); anything after it still needs a manual widening.
+  recomputeExtras(i, { forward: false, forwardUntil: av.group_end });
   state.winComputed = true;
 }
 
-function recomputeExtras(i, { forward }) {
+// `forward: true` auto-includes every line inside the window (what a manual
+// timing edit wants); otherwise only lines before the target line are taken,
+// plus — up to `forwardUntil` — the rest of a merged bookmark run.
+function recomputeExtras(i, { forward, forwardUntil = null }) {
   const state = itemState[i];
   const av = activeVersion(i);
   const cues = episodeCues[av.episode_id] || [];
@@ -933,7 +994,8 @@ function recomputeExtras(i, { forward }) {
     const contained = c.start >= state.winStart - EPS && c.end <= state.winEnd + EPS;
     if (!contained) continue;
     const isBackward = c.end <= av.start + EPS;
-    if (!isBackward && !forward) continue;
+    const inRun = forwardUntil != null && c.end <= forwardUntil + EPS;
+    if (!isBackward && !forward && !inRun) continue;
     if (!state.extraCues.some((e) => e.cueIndex === c.cue_index)) {
       state.extraCues.push({ cueIndex: c.cue_index, start: c.start, end: c.end,
                              text: c.text, origText: c.text, highlights: [] });
@@ -967,6 +1029,7 @@ function renderTiming(i) {
   refs.endDot.hidden = !state.editedEnd;
   refs.editedMark.hidden = !(state.editedStart || state.editedEnd);
   renderLines(i);
+  renderHeaderText(i);   // a merged entry's header mirrors the lines below
 }
 
 function renderLines(i) {
@@ -1023,6 +1086,7 @@ function renderLines(i) {
         renderHeaderText(i);
       } else {
         row.cue.text = text;
+        renderHeaderText(i);   // extras are part of a merged entry's header
       }
       markEdited();
     });
@@ -1149,7 +1213,14 @@ function onWinInput(i, which) {
     state.winStart = value;
     state.editedStart = true;
   } else {
-    if (value < av.end) { value = av.end; warn = `End can't be earlier than this line's own end (${fmtClock(av.end)}).`; }
+    // A merged entry can't be cut shorter than its last line, not just its first.
+    const floor = entryEnd(i);
+    if (value < floor) {
+      value = floor;
+      warn = isMerged(i)
+        ? `End can't be earlier than this entry's last line (${fmtClock(floor)}).`
+        : `End can't be earlier than this line's own end (${fmtClock(floor)}).`;
+    }
     state.winEnd = value;
     state.editedEnd = true;
   }
@@ -1513,6 +1584,8 @@ function applySettingsToForm(d) {
   $("set-media-root").value = d.media_root || "";
   if (d.resolution) $("set-resolution").value = d.resolution;
   if (d.quality) $("set-quality").value = d.quality;
+  if (d.max_bookmark_merge) $("set-bookmark-merge").max = d.max_bookmark_merge;
+  if (d.bookmark_merge) $("set-bookmark-merge").value = d.bookmark_merge;
   if (d.container) {
     $("set-container").value = d.container;
     // The output-name box holds a stem only; the container supplies the suffix.
@@ -1559,13 +1632,21 @@ async function saveSettings() {
         resolution: $("set-resolution").value,
         quality: $("set-quality").value,
         container: $("set-container").value,
+        bookmark_merge: parseInt($("set-bookmark-merge").value, 10) || 1,
       }),
     });
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || "save failed");
     applySettingsToForm(d);
     setSettingsStatus("Saved to " + (d.path || "settings file") + ".");
-    rerunSearch();
+    if (d.dataset) {
+      // The loaded bookmarks file was re-read with the new merge threshold:
+      // refresh its label and list the regrouped entries (empty query included).
+      renderDatasetBar(d.dataset);
+      $("search-form").requestSubmit();
+    } else {
+      rerunSearch();
+    }
   } catch (e) {
     setSettingsStatus(e.message, true);
   } finally {
