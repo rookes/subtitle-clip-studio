@@ -1,6 +1,13 @@
 """Server-side directory browsing and series re-linking (subtitle_clipper.corpus)."""
 
-from subtitle_clipper.corpus import list_dir, match_videos_in_directory
+from pathlib import Path
+
+from subtitle_clipper.corpus import (
+    browsable_file,
+    list_dir,
+    list_roots,
+    match_videos_in_directory,
+)
 
 
 def test_list_dir_dirs_first_then_files(tmp_path):
@@ -22,6 +29,31 @@ def test_list_dir_videos_only_filters_non_video_files(tmp_path):
     names = [e["name"] for e in entries]
     assert "b.mkv" in names
     assert "a.txt" not in names
+
+
+def test_list_dir_exts_filters_by_suffix(tmp_path):
+    (tmp_path / "a.SE.bookmarks").write_bytes(b"")
+    (tmp_path / "a.srt").write_bytes(b"")
+    names = [e["name"] for e in list_dir(tmp_path, exts=(".bookmarks",))]
+    assert "a.SE.bookmarks" in names
+    assert "a.srt" not in names
+
+
+def test_browsable_file_matches_the_list_dir_filter():
+    assert browsable_file(Path("ep.mkv"), videos_only=True)
+    assert not browsable_file(Path("notes.txt"), videos_only=True)
+    assert browsable_file(Path("a.SE.bookmarks"), exts=(".bookmarks",))
+    assert not browsable_file(Path("a.srt"), exts=(".bookmarks",))
+    assert browsable_file(Path("anything.xyz"))          # no filter -> anything goes
+
+
+def test_list_roots_are_real_directories():
+    # The drive/home shortcuts that let the picker cross to another drive; every
+    # one offered must actually be listable.
+    roots = list_roots()
+    assert roots
+    assert all(Path(r["path"]).is_dir() for r in roots)
+    assert len({r["path"] for r in roots}) == len(roots)     # no duplicates
 
 
 def test_match_videos_in_directory_by_season_episode(tmp_path):
@@ -135,3 +167,45 @@ def test_relinker_no_combined_when_zero_padded(tmp_path):
     mapping = match_videos_in_directory(items, tmp_path)
     assert mapping["e1"].endswith("001.mkv")
     assert mapping["e101"].endswith("101.mkv")
+
+
+def test_relinker_season_folder_does_not_lend_to_another_season(tmp_path):
+    # Only S1 is on disk, with plainly numbered files. A season-2 item must come
+    # back unlinked rather than borrowing S1's episode of the same number.
+    _touch(tmp_path / "S1" / "Show - 05.mkv")
+    items = [
+        {"episode_id": "s1e5", "season": 1, "episodes": [5]},
+        {"episode_id": "s2e5", "season": 2, "episodes": [5]},
+    ]
+    mapping = match_videos_in_directory(items, tmp_path)
+    assert mapping["s1e5"].endswith("Show - 05.mkv")
+    assert mapping["s2e5"] is None
+
+
+def test_relinker_matches_series_absolute_numbering(tmp_path):
+    # S3/38.mkv is season 3's episode 1 when seasons 1 and 2 run 25 + 12.
+    _touch(*(tmp_path / "S3" / f"Show - {n}.mkv" for n in range(38, 60)))
+    items = [{"episode_id": f"s1e{n}", "season": 1, "episodes": [n]}
+             for n in range(1, 26)]
+    items += [{"episode_id": f"s2e{n}", "season": 2, "episodes": [n]}
+              for n in range(1, 13)]
+    items.append({"episode_id": "s3e1", "season": 3, "episodes": [1]})
+    mapping = match_videos_in_directory(items, tmp_path)
+    assert mapping["s3e1"].endswith("Show - 38.mkv")
+
+
+def test_relinker_partial_season_is_not_absolute_numbering(tmp_path):
+    # 07.mkv alone in S1 is a partial download; season 1 has no offset to apply.
+    _touch(tmp_path / "S1" / "Show - 07.mkv")
+    mapping = match_videos_in_directory(
+        [{"episode_id": "s1e1", "season": 1, "episodes": [1]}], tmp_path)
+    assert mapping["s1e1"] is None
+
+
+def test_relinker_prefers_the_season_folder_over_a_derived_subfolder(tmp_path):
+    _touch(tmp_path / "S1" / "S01E01.mp4",
+           tmp_path / "S1" / "downmix" / "S01E01.mp4",
+           tmp_path / "S1" / "downmix" / "S01E01.subbed.mp4")
+    mapping = match_videos_in_directory(
+        [{"episode_id": "e1", "season": 1, "episodes": [1]}], tmp_path)
+    assert mapping["e1"] == str(tmp_path / "S1" / "S01E01.mp4")

@@ -113,6 +113,14 @@ def test_preview_cmd_forces_8bit_yuv420p():
     assert "yuv420p" in cmd  # explicit -pix_fmt value too
 
 
+def test_preview_cmd_downmixes_surround_to_stereo():
+    # Surround sources (E-AC-3 5.1/7.1, AC-3, DTS) otherwise re-encode to
+    # multichannel AAC, which browsers play with wrong or missing audio.
+    cmd = ffmpeg.preview_cmd(Path("in.mkv"), 1.0, 4.0, Path("out.mp4"), audio_track=0)
+    assert cmd[cmd.index("-ac") + 1] == "2"
+    assert cmd[cmd.index("-ar") + 1] == str(ffmpeg.DEFAULT_SAMPLE_RATE)
+
+
 def test_cut_segment_cmd_shape():
     cmd = ffmpeg.cut_segment_cmd(
         Path("in.mkv"), 9.5, 13.0, Path("out.mkv"),

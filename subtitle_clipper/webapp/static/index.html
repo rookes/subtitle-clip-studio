@@ -140,6 +140,8 @@
     <label><input type="checkbox" id="select-page"> Select all on page</label>
     <label><input type="checkbox" id="select-all"> Select all results</label>
     <span id="sel-count" class="muted"></span>
+    <button type="button" id="hide-unselected" class="secondary toggle-btn" aria-pressed="false"
+      title="show only the results you have selected">Hide unselected</button>
     <span class="spacer"></span>
     <label>Per page
       <select id="per-page">
@@ -179,6 +181,11 @@
         <div class="preview">
           <button type="button" class="preview-btn">▶ Preview</button>
           <button type="button" class="expand-btn">Edit timing ▾</button>
+          <div class="row-actions">
+            <button type="button" class="clip-btn" title="render and download just this clip, using the options above">✂ Clip</button>
+            <button type="button" class="copy-btn" title="copy this entry's subtitle text">⧉ Copy text</button>
+          </div>
+          <span class="row-status muted"></span>
           <video controls preload="none" hidden></video>
         </div>
       </div>
@@ -225,6 +232,14 @@
   <div id="browse-modal" class="modal" hidden>
     <div class="modal-box">
       <div class="modal-title" id="browse-title">Choose a file</div>
+      <div class="browse-nav">
+        <button type="button" id="browse-up" title="Go up to the parent folder">↑</button>
+        <input type="text" id="browse-input" spellcheck="false" autocomplete="off"
+               placeholder="Type or paste a path, then press Enter">
+        <button type="button" id="browse-go">Go</button>
+      </div>
+      <!-- Drive / home shortcuts: the only way to cross to another drive. -->
+      <div class="browse-roots" id="browse-roots"></div>
       <div class="modal-path" id="browse-path"></div>
       <ul id="browse-list" class="browse-list"></ul>
       <div class="modal-actions">

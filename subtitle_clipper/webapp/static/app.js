@@ -20,6 +20,7 @@ let rememberedSeriesDir = {};  // show_slug -> directory
 
 let currentPage = 0;
 let perPage = 25;
+let hideUnselected = false;    // filter the list down to the selected rows only
 
 // --- time formatting --------------------------------------------------------
 
@@ -439,6 +440,9 @@ async function runSearch(ev) {
     lastRegex = $("regex").checked;
     itemState = {};
     currentPage = 0;
+    // A fresh search re-selects everything with video, so the filter would hide
+    // nothing — drop it rather than leave a pressed button doing no work.
+    setHideUnselected(false);
     seedItemStates();
     renderPage();
     setStatus(`${data.count} match(es)` + (data.media_root ? "" : "  (no media_root configured — video generation unavailable)"));
@@ -502,16 +506,25 @@ function relinkItem(i) {
 
 // --- pagination -------------------------------------------------------------
 
+// The one source of truth for "which results are in the list right now" —
+// page counts, the page slice and the bar totals all derive from it, so the
+// filter can't desync them.
+function visibleIndices() {
+  const idx = [];
+  lastResults.forEach((_, i) => {
+    if (hideUnselected && !(itemState[i] && itemState[i].selected)) return;
+    idx.push(i);
+  });
+  return idx;
+}
+
 function pageCount() {
-  return Math.max(1, Math.ceil(lastResults.length / perPage));
+  return Math.max(1, Math.ceil(visibleIndices().length / perPage));
 }
 
 function pageIndices() {
   const start = currentPage * perPage;
-  const end = Math.min(start + perPage, lastResults.length);
-  const idx = [];
-  for (let i = start; i < end; i++) idx.push(i);
-  return idx;
+  return visibleIndices().slice(start, start + perPage);
 }
 
 function renderPage() {
@@ -526,16 +539,50 @@ function renderPage() {
   if (!hasResults) return;
 
   if (currentPage >= pageCount()) currentPage = pageCount() - 1;
-  for (const i of pageIndices()) {
+  const visible = pageIndices();
+  for (const i of visible) {
     const node = tpl.content.cloneNode(true);
     buildRow(node, i);
     list.appendChild(node);
   }
+  // Filtering everything away leaves a blank page with no hint of why.
+  if (!visible.length && hideUnselected) {
+    const li = document.createElement("li");
+    li.className = "no-results";
+    li.textContent = "Nothing selected — click “Show all” to see every result.";
+    list.appendChild(li);
+  }
   updatePageBar();
 }
 
+// Selection changes move rows in and out of the list while the filter is on.
+function refreshFilterView() {
+  if (hideUnselected) {
+    hideHighlightButton();
+    renderPage();   // renderPage → updatePageBar does the syncing below
+    return;
+  }
+  syncSelectPageCheckbox();
+  syncSelectAllCheckbox();
+  updateSelCount();
+}
+
+function setHideUnselected(on) {
+  hideUnselected = on;
+  const btn = $("hide-unselected");
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? "Show all" : "Hide unselected";
+}
+
+function toggleHideUnselected() {
+  setHideUnselected(!hideUnselected);
+  currentPage = 0;
+  hideHighlightButton();
+  renderPage();
+}
+
 function updatePageBar() {
-  const total = lastResults.length;
+  const total = visibleIndices().length;
   const pages = pageCount();
   const start = total ? currentPage * perPage + 1 : 0;
   const end = Math.min((currentPage + 1) * perPage, total);
@@ -575,6 +622,9 @@ function buildRow(node, i) {
     pathBtn: node.querySelector(".path"),
     previewBtn: node.querySelector(".preview-btn"),
     expandBtn: node.querySelector(".expand-btn"),
+    clipBtn: node.querySelector(".clip-btn"),
+    copyBtn: node.querySelector(".copy-btn"),
+    rowStatus: node.querySelector(".row-status"),
     video: node.querySelector("video"),
     editor: node.querySelector(".editor"),
     winStartInput: node.querySelector(".win-start"),
@@ -610,12 +660,12 @@ function buildRow(node, i) {
 
   refs.include.addEventListener("change", () => {
     itemState[i].selected = refs.include.checked;
-    syncSelectPageCheckbox();
-    syncSelectAllCheckbox();
-    updateSelCount();
+    refreshFilterView();   // unchecking drops the row out of a filtered list
   });
   refs.previewBtn.addEventListener("click", () => onPreviewClick(i));
   refs.expandBtn.addEventListener("click", () => toggleExpand(i));
+  refs.clipBtn.addEventListener("click", () => clipOne(i));
+  refs.copyBtn.addEventListener("click", () => copyItemText(i));
   for (const [inp, which] of [[refs.winStartInput, "start"], [refs.winEndInput, "end"]]) {
     inp.addEventListener("keydown", (e) => onClockKeydown(e, inp));
     inp.addEventListener("focus", () => ensureClockTemplate(inp));
@@ -753,6 +803,8 @@ function updateRowMediaDisplay(i) {
   refs.include.disabled = !media.hasVideo;
   refs.include.checked = !!(itemState[i] && itemState[i].selected) && media.hasVideo;
   refs.previewBtn.disabled = !media.hasVideo;
+  // Copying text needs no video, so only the clip button follows the media state.
+  refs.clipBtn.disabled = !media.hasVideo;
 }
 
 function selectedIndices() {
@@ -796,8 +848,7 @@ function onSelectPageToggle() {
     itemState[i].selected = target;
     if (rowRefs[i]) rowRefs[i].include.checked = target;
   }
-  syncSelectAllCheckbox();
-  updateSelCount();
+  refreshFilterView();
 }
 
 function onSelectAllToggle() {
@@ -806,8 +857,7 @@ function onSelectAllToggle() {
     itemState[i].selected = target;
     if (rowRefs[i]) rowRefs[i].include.checked = target;
   }
-  syncSelectPageCheckbox();
-  updateSelCount();
+  refreshFilterView();
 }
 
 // --- preview ----------------------------------------------------------------
@@ -1032,6 +1082,18 @@ function renderTiming(i) {
   renderHeaderText(i);   // a merged entry's header mirrors the lines below
 }
 
+// Every cue this entry will clip, in playback order: the target line (editable,
+// resettable, not removable) plus the auto-included extras, minus anything the
+// user removed. Both the editor and the copy button read it, so what you copy
+// is always exactly what the editor lists.
+function timingRows(i) {
+  const state = itemState[i];
+  const av = activeVersion(i);
+  return [{ target: true, start: av.start, end: av.end }].concat(
+    state.extraCues.map((e) => ({ target: false, cue: e, start: e.start, end: e.end }))
+  ).sort((a, b) => a.start - b.start);
+}
+
 function renderLines(i) {
   const refs = rowRefs[i];
   const state = itemState[i];
@@ -1039,12 +1101,7 @@ function renderLines(i) {
   const tpl = $("line-tpl");
   refs.linesList.innerHTML = "";
 
-  // Target line first (editable, resettable, not removable), then extras.
-  const rows = [{ target: true, start: av.start, end: av.end }].concat(
-    state.extraCues.map((e) => ({ target: false, cue: e, start: e.start, end: e.end }))
-  ).sort((a, b) => a.start - b.start);
-
-  for (const row of rows) {
+  for (const row of timingRows(i)) {
     const node = tpl.content.cloneNode(true);
     const li = node.querySelector(".line");
     li.classList.toggle("target", row.target);
@@ -1267,18 +1324,14 @@ function setVideoOverride(i, path, status) {
   itemState[i].videoOverride = { path, status };
   if (status === "video") itemState[i].selected = true;
   updateRowMediaDisplay(i);
-  syncSelectPageCheckbox();
-  syncSelectAllCheckbox();
-  updateSelCount();
+  refreshFilterView();   // linking selects the row, which can bring it into view
 }
 
 function clearVideoOverrideAsUnlinked(i) {
   itemState[i].videoOverride = { path: null, status: "unlinked" };
   itemState[i].selected = false;
   updateRowMediaDisplay(i);
-  syncSelectPageCheckbox();
-  syncSelectAllCheckbox();
-  updateSelCount();
+  refreshFilterView();   // …and unlinking deselects it, dropping it out again
 }
 
 function onPathClick(i) {
@@ -1338,9 +1391,11 @@ function onShowClick(i) {
 let browseState = null;
 
 function openBrowse({ mode, onChoose, exts, title }) {
-  browseState = { mode, path: "", onChoose, exts: exts || null };
+  browseState = { mode, path: "", parent: null, onChoose, exts: exts || null, roots: "" };
   $("browse-title").textContent = title || (mode === "dir" ? "Choose a folder" : "Choose a video file");
   $("browse-choose-dir").hidden = mode !== "dir";
+  $("browse-path").textContent = "";
+  $("browse-input").value = "";
   $("browse-modal").hidden = false;
   browseLoad("");
 }
@@ -1355,12 +1410,25 @@ async function browseLoad(path) {
   if (path) params.set("path", path);
   const r = await fetch(`/api/browse?${params.toString()}`);
   const data = await r.json();
+  renderBrowseRoots(data.roots);
   if (!r.ok) {
-    $("browse-path").textContent = data.error || "could not list directory";
+    // Keep the typed text in the box so a typo can be corrected in place.
+    $("browse-path").textContent = `${data.error || "could not list directory"}: ${path}`;
+    return;
+  }
+  // A typed path that named a file the picker would have listed *is* the pick
+  // (unless we're choosing a folder, where its parent is the useful answer).
+  if (data.file && browseState.mode !== "dir") {
+    const cb = browseState.onChoose;
+    closeBrowse();
+    cb(data.file);
     return;
   }
   browseState.path = data.path;
-  $("browse-path").textContent = data.path;
+  browseState.parent = data.parent || null;
+  $("browse-path").textContent = "";
+  $("browse-input").value = data.path;
+  $("browse-up").disabled = !data.parent;
   const ul = $("browse-list");
   ul.innerHTML = "";
   data.entries.forEach((entry) => {
@@ -1380,11 +1448,39 @@ async function browseLoad(path) {
   });
 }
 
+// The roots come back with every listing but never change during a session;
+// only rebuild the chips when the set actually differs.
+function renderBrowseRoots(roots) {
+  const key = (roots || []).map((r) => r.path).join("|");
+  if (key === browseState.roots) return;
+  browseState.roots = key;
+  const box = $("browse-roots");
+  box.innerHTML = "";
+  (roots || []).forEach((root) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = root.name;
+    btn.title = root.path;
+    btn.addEventListener("click", () => browseLoad(root.path));
+    box.appendChild(btn);
+  });
+}
+
 function closeBrowse() {
   $("browse-modal").hidden = true;
   browseState = null;
 }
 
+$("browse-go").addEventListener("click", () => browseLoad($("browse-input").value.trim()));
+$("browse-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    browseLoad($("browse-input").value.trim());
+  }
+});
+$("browse-up").addEventListener("click", () => {
+  if (browseState.parent) browseLoad(browseState.parent);
+});
 $("browse-cancel").addEventListener("click", closeBrowse);
 $("browse-choose-dir").addEventListener("click", () => {
   const cb = browseState.onChoose;
@@ -1477,10 +1573,37 @@ function downloadUrl(name) {
   return `/api/download/${encodeURIComponent(name)}`;
 }
 
+// The burn-in block of a /api/generate body, or null when burn-in is off.
+// Shared by the batch Generate button and the per-row Clip button so a single
+// clip always matches what the batch would have produced.
+function burnInBody() {
+  if (!$("burn-in").checked) return null;
+  return {
+    font: $("burn-font").value || "Arial",
+    size: parseInt($("burn-size").value, 10) || 28,
+    primary_color: hexToAssColor($("burn-color").value),
+    outline_color: "&H00000000",
+    outline: parseInt($("burn-outline").value, 10) || 2,
+  };
+}
+
+function triggerDownload(name) {
+  const a = document.createElement("a");
+  a.href = downloadUrl(name);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// Browsers throttle a burst of programmatic clicks, hence the stagger; the
+// first one may prompt to allow multiple downloads.
+function downloadAll(names) {
+  names.forEach((name, n) => setTimeout(() => triggerDownload(name), n * 300));
+}
+
 // One link per generated file (they all live in the clips/ output dir), plus a
-// "Download all" shortcut when there are several. Browsers throttle a burst of
-// programmatic clicks, hence the stagger; the first one may prompt to allow
-// multiple downloads.
+// "Download all" shortcut when there are several.
 function renderDownloads(names) {
   if (!names.length) return;
   const status = $("gen-status");
@@ -1489,16 +1612,7 @@ function renderDownloads(names) {
     all.type = "button";
     all.id = "download-all";
     all.textContent = `↓ Download all (${names.length})`;
-    all.addEventListener("click", () => {
-      names.forEach((name, n) => setTimeout(() => {
-        const a = document.createElement("a");
-        a.href = downloadUrl(name);
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }, n * 300));
-    });
+    all.addEventListener("click", () => downloadAll(names));
     status.append(all);
   }
   const list = document.createElement("ul");
@@ -1531,15 +1645,8 @@ async function runGenerate() {
       separate: $("separate-files").checked,
       zip: $("zip-bundle").checked,
     };
-    if ($("burn-in").checked) {
-      body.burn_in = {
-        font: $("burn-font").value || "Arial",
-        size: parseInt($("burn-size").value, 10) || 28,
-        primary_color: hexToAssColor($("burn-color").value),
-        outline_color: "&H00000000",
-        outline: parseInt($("burn-outline").value, 10) || 2,
-      };
-    }
+    const burn = burnInBody();
+    if (burn) body.burn_in = burn;
     const resp = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1560,6 +1667,133 @@ async function runGenerate() {
     $("gen-status").textContent = e.message;
   } finally {
     btn.disabled = false;
+  }
+}
+
+// --- single-item clip -------------------------------------------------------
+
+// A per-item output name, so clipping several rows one at a time doesn't have
+// each render overwrite the last in clips/. Kept to [A-Za-z0-9_-] because the
+// server's _safe_name only strips path separators and known extensions — it
+// won't scrub characters Windows rejects in a filename — and a dot-free stem
+// keeps /api/download's suffix check unambiguous.
+function singleClipName(i) {
+  const m = lastResults[i];
+  const av = activeVersion(i);
+  const stem = ($("out-name").value || "clip").replace(/\.[^.]*$/, "");
+  const label = m.display_name || m.show_title || m.show_slug || "";
+  const eps = av.episodes || m.episodes;
+  const season = av.season != null ? av.season : m.season;
+  const ep = eps && eps.length ? `S${season ?? "?"}E${eps.join("-")}` : "";
+  const at = fmtTime(av.start).replace(/:/g, "-");
+  const clean = (s) => String(s).replace(/[^A-Za-z0-9_-]+/g, "-");
+  const name = [stem, label, ep, at]
+    .filter(Boolean)
+    .map(clean)
+    .join("-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return name || "clip";
+}
+
+function setRowStatus(refs, msg, color = "") {
+  refs.rowStatus.textContent = msg;
+  refs.rowStatus.style.color = color;
+}
+
+// Render just this row and download the result, using the same options as the
+// batch button: pad + burn-in from the gen-bar, container/resolution/quality
+// from the saved settings (the server reads those itself).
+async function clipOne(i) {
+  const refs = rowRefs[i];
+  if (!refs || refs.clipBtn.disabled) return;
+  // The row may be rebuilt by paging or the filter while ffmpeg runs; anything
+  // touching the DOM after an await has to check it's still the same row.
+  const live = () => rowRefs[i] === refs;
+  refs.clipBtn.disabled = true;
+  refs.clipBtn.textContent = "⏳ Clipping…";
+  setRowStatus(refs, "Rendering… this can take a while.");
+  try {
+    await ensureWindow(i);   // a row that was never expanded still needs a window
+    const body = {
+      matches: [buildPayload(i)],
+      pad: currentPad(),
+      name: singleClipName(i),
+      separate: false,
+      zip: false,
+    };
+    const burn = burnInBody();
+    if (burn) body.burn_in = burn;
+    const resp = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "generation failed");
+    const names = data.downloads || (data.download ? [data.download] : []);
+    if (!names.length) {
+      const why = data.skipped && data.skipped.length ? data.skipped[0].reason : "nothing to clip";
+      throw new Error(why);
+    }
+    // With burn-in on (the default) that's one file; with it off the .srt
+    // sidecar comes along too.
+    downloadAll(names);
+    if (!live()) return;
+    setRowStatus(refs, "✓ Downloaded", "var(--ok)");
+    setTimeout(() => { if (live()) setRowStatus(refs, ""); }, 4000);
+  } catch (e) {
+    if (live()) setRowStatus(refs, e.message, "var(--err)");
+  } finally {
+    if (live()) {
+      refs.clipBtn.disabled = false;
+      refs.clipBtn.textContent = "✂ Clip";
+    }
+  }
+}
+
+// --- copy item text ---------------------------------------------------------
+
+// navigator.clipboard only exists in a secure context, which http://<lan-ip>
+// (how the UI is reached from a phone) is not — hence the execCommand fallback.
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);   // iOS Safari needs the explicit range
+  const ok = document.execCommand("copy");
+  ta.remove();
+  if (!ok) throw new Error("copy blocked by the browser");
+}
+
+// The entry's cues as plain text, one blank line between them: the same lines
+// the Edit timing view shows, with the user's edits applied. Highlights live as
+// character offsets rather than markup, so the stored text is already clean —
+// the <font> tags only ever get added server-side when the SRT is written.
+async function copyItemText(i) {
+  const refs = rowRefs[i];
+  if (!refs) return;
+  const live = () => rowRefs[i] === refs;
+  try {
+    await ensureWindow(i);   // works on a collapsed row that was never expanded
+    const text = timingRows(i)
+      .map((row) => (row.target ? targetTextOf(i) : row.cue.text))
+      .join("\n\n");
+    await copyToClipboard(text);
+    if (!live()) return;
+    refs.copyBtn.textContent = "✓ Copied";
+    setTimeout(() => { if (live()) refs.copyBtn.textContent = "⧉ Copy text"; }, 1500);
+  } catch (e) {
+    if (live()) setRowStatus(refs, e.message, "var(--err)");
   }
 }
 
@@ -1757,6 +1991,7 @@ $("search-form").addEventListener("submit", runSearch);
 $("generate-btn").addEventListener("click", runGenerate);
 $("select-page").addEventListener("change", onSelectPageToggle);
 $("select-all").addEventListener("change", onSelectAllToggle);
+$("hide-unselected").addEventListener("click", toggleHideUnselected);
 $("prev-page").addEventListener("click", () => { if (currentPage > 0) { currentPage--; renderPage(); } });
 $("next-page").addEventListener("click", () => { if (currentPage < pageCount() - 1) { currentPage++; renderPage(); } });
 $("per-page").addEventListener("change", () => {

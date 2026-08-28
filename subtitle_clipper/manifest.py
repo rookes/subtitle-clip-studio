@@ -23,6 +23,12 @@ from .config import CorpusConfig, MediaMapConfig
 MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".webm", ".ts", ".m2ts",
                     ".wav", ".flac", ".mka", ".m4a", ".opus"}
 
+# Preferred container when one episode is present as several files that are the
+# same rip in different wrappers (a ``… - 01.mkv`` sitting next to a
+# ``… - 01.mp4``). Video containers first, best-supported first; anything not
+# listed (the audio-only members of MEDIA_EXTENSIONS) sorts last.
+CONTAINER_PREFERENCE = (".mkv", ".mp4", ".m2ts", ".ts", ".mov", ".webm", ".avi")
+
 _SOURCES = ("AMZN", "DSNP", "TVB-J2", "TVB", "ATV", "NF", "UHDBD", "BD", "DVD",
             "WEB", "YT")
 _FOLDER_SOURCE_KEYWORDS = {
@@ -322,7 +328,7 @@ def pair_media(records: list[EpisodeRecord], media_map: MediaMapConfig,
         override = media_map.shows.get(show_slug, {})
         show_rel = Path(recs[0].srt_path).parts[:3]  # Category/DubType/Show
         show_dir = root / override["dir"] if "dir" in override \
-            else root.joinpath(*show_rel)
+            else resolve_show_dir(root, show_rel, recs[0])
 
         if "file" in override:
             f = show_dir / override["file"] if not Path(override["file"]).is_absolute() \
@@ -342,7 +348,7 @@ def pair_media(records: list[EpisodeRecord], media_map: MediaMapConfig,
 
         media_files = [p for p in show_dir.rglob("*") if p.suffix.lower() in MEDIA_EXTENSIONS]
         pattern = re.compile(override["pattern"]) if "pattern" in override else None
-        index = _index_media(media_files, pattern)
+        index = index_media_by_episode(media_files, show_dir, pattern)
         wanted_variant = override.get("variant")
 
         # Pass 1: ordinary matching. Movies pair to the lone file in the folder;
@@ -360,23 +366,30 @@ def pair_media(records: list[EpisodeRecord], media_map: MediaMapConfig,
                 continue
             if wanted_variant and rec.source and wanted_variant != rec.source:
                 rec.media_flags.append("variant_mismatch")
-            candidates = index.get((rec.season, rec.episodes[0])) \
-                or index.get((None, rec.episodes[0])) or []
+            candidates = episode_candidates(index, rec.season, rec.episodes[0])
             candidates_by_rec[id(rec)] = candidates
             episode_recs.append(rec)
             if candidates:
                 seasons_with_match.add(rec.season)
 
         # Pass 2: for a season that matched nothing normally, try the combined
-        # SxxEyy-as-one-number reading (101.mkv -> S1E1).
+        # SxxEyy-as-one-number reading (101.mkv -> S1E1), then series-absolute
+        # numbering inside a season folder (S3/38.mkv -> S3E01).
         combined: dict[tuple[int, int], list[Path]] | None = None
+        offsets: dict[int, dict[int, list[Path]]] = {}
+        lengths = _subtitle_season_lengths(recs)
         for rec in episode_recs:
             if candidates_by_rec[id(rec)] or rec.season is None \
                     or rec.season in seasons_with_match:
                 continue
             if combined is None:
                 combined = combined_season_episode_index(media_files)
-            hit = combined.get((rec.season, rec.episodes[0]))
+            if rec.season not in offsets:
+                offsets[rec.season] = season_offset_index(
+                    index, rec.season,
+                    absolute_episode_start(rec.season, lengths))
+            hit = combined.get((rec.season, rec.episodes[0])) \
+                or offsets[rec.season].get(rec.episodes[0])
             if hit:
                 candidates_by_rec[id(rec)] = hit
 
@@ -398,13 +411,101 @@ def pair_media(records: list[EpisodeRecord], media_map: MediaMapConfig,
                     rec.media_flags.append("ambiguous_media")
 
 
+def resolve_show_dir(root: Path, show_rel: tuple[str, ...],
+                     record: EpisodeRecord) -> Path:
+    """Locate a show's media folder under the media ``root``.
+
+    The media tree is expected to mirror the subtitle tree, so the mirrored
+    path wins whenever it exists. It often doesn't: the same show is filed under
+    a shorter or differently decorated name on the media side (the subtitles say
+    ``Bluey -- 妙妙犬保怡 (2018)``, the video folder is just ``Bluey``). So fall
+    back to matching folders by their *parsed* title — first among the mirrored
+    parent's siblings, then across the category's other dub-type folders, then
+    at the top of the media root, taking the first tier that names exactly one
+    show. Returns the mirrored path unchanged when nothing matches, leaving the
+    caller to flag it missing.
+    """
+    mirrored = root.joinpath(*show_rel)
+    if mirrored.is_dir():
+        return mirrored
+    for parent in _show_dir_search_parents(root, show_rel):
+        hit = _match_show_folder(parent, record)
+        if hit is not None:
+            return hit
+    return mirrored
+
+
+def _show_dir_search_parents(root: Path, show_rel: tuple[str, ...]) -> list[Path]:
+    """Directories to look for a show folder in, narrowest scope first."""
+    parents = [root.joinpath(*show_rel[:-1])]                # Series/Dubbed
+    category = root / show_rel[0] if show_rel else root      # Series
+    try:
+        parents.extend(sorted(p for p in category.iterdir() if p.is_dir()))
+    except OSError:
+        pass
+    parents.append(root)
+    ordered: list[Path] = []
+    for parent in parents:
+        if parent.is_dir() and parent not in ordered:
+            ordered.append(parent)
+    return ordered
+
+
+def _match_show_folder(parent: Path, record: EpisodeRecord) -> Path | None:
+    """The one folder directly under ``parent`` that is ``record``'s show.
+
+    Folder names are parsed the same way the subtitle side parses them, so
+    ``Bluey``, ``Bluey (2018)`` and ``Bluey -- 妙妙犬保怡 (2018)`` all match on
+    the English title; a Chinese title matches too. A folder whose year agrees
+    outranks one that says nothing, which separates a remake from its original.
+    Ambiguity (two equally good folders) returns None rather than guessing.
+    """
+    wanted_en = slugify(record.show_title_en)
+    wanted_zh = slugify(record.show_title_zh) if record.show_title_zh else None
+    try:
+        children = sorted(p for p in parent.iterdir() if p.is_dir())
+    except OSError:
+        return None
+
+    hits: list[tuple[int, Path]] = []
+    for child in children:
+        en, zh, year = parse_show_folder(child.name)
+        if slugify(en) != wanted_en and not (wanted_zh and zh
+                                             and slugify(zh) == wanted_zh):
+            continue
+        if year is not None and record.year is not None and year != record.year:
+            continue
+        hits.append((0 if year == record.year else 1, child))
+
+    if not hits:
+        return None
+    best = min(rank for rank, _ in hits)
+    top = [path for rank, path in hits if rank == best]
+    return top[0] if len(top) == 1 else None
+
+
+def _subtitle_season_lengths(records: list[EpisodeRecord]) -> dict[int, int]:
+    """Highest episode number the subtitles hold for each of a show's seasons."""
+    lengths: dict[int, int] = {}
+    for rec in records:
+        if rec.season is not None and rec.episodes:
+            lengths[rec.season] = max(lengths.get(rec.season, 0), rec.episodes[-1])
+    return lengths
+
+
 def _pick_by_source(candidates: list[Path], source: str | None) -> Path | None:
     """From several candidate files, return the one matching ``source`` (by
     filename/folder version tag), or None if that's still ambiguous."""
+    candidates = prefer_shallowest(candidates)
+    same_rip = pick_same_rip(candidates)
+    if same_rip is not None:
+        return same_rip
     if not source:
         return None
     matched = [c for c in candidates if detect_source_from_path(c) == source]
-    return matched[0] if len(matched) == 1 else None
+    if len(matched) == 1:
+        return matched[0]
+    return pick_same_rip(matched)
 
 
 # Media-filename episode parsing. Shared with the clip tool so both pair the
@@ -416,8 +517,23 @@ _RE_MEDIA_BARE = re.compile(r"(?<![A-Za-z0-9])(?:E[Pp]?\s*)?(\d{1,4})(?![A-Za-z0
 _RE_COMBINED_CODE = re.compile(r"(?<![A-Za-z0-9])(\d{3})(?![A-Za-z0-9])")
 
 
-def _index_media(files: list[Path], pattern: "re.Pattern[str] | None"
-                 ) -> dict[tuple[int | None, int], list[Path]]:
+def index_media_by_episode(
+    files: list[Path], root_dir: Path,
+    pattern: "re.Pattern[str] | None" = None,
+) -> dict[tuple[int | None, int], list[Path]]:
+    """Index a show's media files by ``(season, episode)``.
+
+    The episode number comes from the filename (``pattern`` override, then
+    ``SxxEyy``, ``NxM``, then a bare number). The season comes from the filename
+    too when it carries one, and otherwise from the file's own folders under
+    ``root_dir`` — an ``S3`` / ``Season 3`` folder makes every plainly numbered
+    file inside it season 3. Only files that say nothing at all about a season
+    end up under a ``None`` key; see :func:`episode_candidates` for why that
+    distinction matters.
+
+    Shared by the corpus scan and the "relink to this directory" browser so both
+    read a media tree the same way.
+    """
     index: dict[tuple[int | None, int], list[Path]] = {}
     for f in files:
         season = episode = None
@@ -438,9 +554,136 @@ def _index_media(files: list[Path], pattern: "re.Pattern[str] | None"
                     season, episode = int(m3.group(1)), int(m3.group(2))
                 elif m2:
                     episode = int(m2.group(1))
+        if season is None:
+            season = season_from_folders(f, root_dir)
         if episode is not None:
             index.setdefault((season, episode), []).append(f)
     return index
+
+
+def season_from_folders(path: Path, root_dir: Path) -> int | None:
+    """Season number carried by ``path``'s folders below ``root_dir``.
+
+    Nearest folder wins, so ``Show/S3/BD/38.mkv`` is season 3. Returns None when
+    no folder names a season (or ``path`` is outside ``root_dir``).
+    """
+    try:
+        rel = path.relative_to(root_dir)
+    except ValueError:
+        return None
+    for part in reversed(rel.parts[:-1]):
+        season, _ = parse_season_folder(part)
+        if season is not None:
+            return season
+    return None
+
+
+def episode_candidates(index: dict[tuple[int | None, int], list[Path]],
+                       season: int | None, episode: int) -> list[Path]:
+    """Media files that may be ``season``'s ``episode``, most specific first.
+
+    Files whose name or folder places them in a season are only ever offered for
+    *that* season; the season-less bucket stays the fallback for everybody,
+    which is what makes a flat ``05.mkv`` folder keep working. Without that
+    split a season with no media on disk silently borrows another season's file
+    — Attack on Titan has video for seasons 1 and 3 only, and S2E05 used to
+    resolve to the S1 folder's episode 5.
+
+    When the *subtitles* don't say which season they are, any file with that
+    episode number is fair game (the caller's version tie-break picks).
+    """
+    if season is not None:
+        return index.get((season, episode)) or index.get((None, episode)) or []
+    seasonless = index.get((None, episode))
+    if seasonless:
+        return seasonless
+    return sorted(f for (_, e), files in index.items() if e == episode
+                  for f in files)
+
+
+def absolute_episode_start(season: int,
+                           season_lengths: dict[int, int]) -> int | None:
+    """Where ``season``'s episode 1 lands if the series is numbered straight
+    through from the beginning.
+
+    Attack on Titan's seasons 1 and 2 run 25 and 12 episodes, so season 3's
+    episode 1 is episode 38 of the series. ``season_lengths`` maps a season to
+    its highest episode number and comes from the *subtitles*, the side that is
+    always numbered per season. Returns None when any earlier season is absent
+    from it — the total would be a guess, and a guess here mislabels files.
+    """
+    total = 0
+    for s in range(1, season):
+        length = season_lengths.get(s)
+        if length is None:
+            return None
+        total += length
+    return total + 1
+
+
+def season_offset_index(index: dict[tuple[int | None, int], list[Path]],
+                        season: int, first_absolute: int | None
+                        ) -> dict[int, list[Path]]:
+    """Map a season's own episode numbers onto media numbered across the series.
+
+    Attack on Titan's ``S3`` folder holds episodes 38-59: season 3's episode 1
+    is the file numbered 38. Only files the tree already assigned to ``season``
+    count, and the run has to be contiguous *and* start exactly on
+    ``first_absolute`` (see :func:`absolute_episode_start`) — that agreement is
+    the whole evidence that the folder is numbered across the series rather than
+    just missing its early episodes. A lone ``Sailor Moon - 07.mkv`` in an
+    ``S1`` folder is the latter, and returns ``{}`` so the episode stays
+    unlinked instead of being served as season 1 episode 1.
+
+    A *fallback*: callers apply it only to a season nothing matched normally.
+    """
+    if first_absolute is None or first_absolute <= 1:
+        return {}
+    eps = sorted(e for (s, e) in index if s == season)
+    if not eps or eps[0] != first_absolute:
+        return {}
+    if eps != list(range(eps[0], eps[-1] + 1)):
+        return {}
+    offset = eps[0] - 1
+    return {e - offset: index[(season, e)] for e in eps}
+
+
+def prefer_shallowest(candidates: list[Path]) -> list[Path]:
+    """Drop copies of an episode filed deeper than the shallowest candidate.
+
+    A season folder often keeps derived copies of its episodes in a subfolder —
+    ``S1/downmix/S01E001.mp4`` (and a hardsubbed ``…subbed.mp4``) next to the
+    real ``S1/S01E001.mp4``. Those are alternates of one episode, not the
+    genuinely separate releases that sibling ``Season 1 - BD`` /
+    ``Season 1 - DVD`` folders hold; siblings sit at the same depth, so they all
+    survive and the version tie-break still decides between them.
+    """
+    if not candidates:
+        return candidates
+    top = min(len(c.parts) for c in candidates)
+    return [c for c in candidates if len(c.parts) == top]
+
+
+def pick_same_rip(candidates: list[Path]) -> Path | None:
+    """Collapse candidates that are one rip in several containers.
+
+    ``… - 01.mkv`` beside ``… - 01.mp4`` is the same episode twice, not two
+    versions to choose between, so pick by :data:`CONTAINER_PREFERENCE`. Guarded
+    on the candidates sharing a folder *and* a stem, so genuinely different
+    files stay ambiguous and are left to the caller's version matching.
+    """
+    if not candidates:
+        return None
+    if len({(c.parent, c.stem) for c in candidates}) != 1:
+        return None
+    return min(candidates, key=lambda p: (_container_rank(p), str(p)))
+
+
+def _container_rank(path: Path) -> int:
+    suffix = path.suffix.lower()
+    if suffix not in CONTAINER_PREFERENCE:
+        return len(CONTAINER_PREFERENCE)
+    return CONTAINER_PREFERENCE.index(suffix)
 
 
 def combined_season_episode_index(

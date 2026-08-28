@@ -182,7 +182,12 @@ def preview_cmd(
         "-vf", f"scale=-2:{height},format=yuv420p",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
+        # Downmix to stereo like cut_segment does. Surround sources (E-AC-3,
+        # AC-3, DTS — commonly 5.1 or 7.1) otherwise re-encode to multichannel
+        # AAC, which browsers play badly or not at all: 5.1 AAC is unreliable
+        # across engines, and 7.1 makes ffmpeg emit a PCE-based layout that no
+        # browser decodes, so the preview plays with wrong or missing audio.
+        "-c:a", "aac", "-ac", "2", "-ar", str(DEFAULT_SAMPLE_RATE), "-b:a", "160k",
         "-movflags", "+faststart",
         str(out),
     ]

@@ -64,7 +64,11 @@ Open the **⚙ settings** menu in the app and set:
   the `CantoCaptions/Subtitle` directory.
 - **Media root** — the folder holding the matching videos. If the media root's folders
   mirror the subtitle folders, then videos will be automatically linked for clipping. Otherwise,
-  you'll need to manually select your video location each time.
+  you'll need to manually select your video location each time. A show folder named differently
+  on the media side (`Bluey` for `Bluey -- 妙妙犬保怡 (2018)`) is still found, by matching the
+  title and year. Season folders are binding: a file under `S2/` is only ever offered for
+  season 2, so a season you have no video for stays unlinked rather than borrowing another
+  season's episode of the same number.
 
   Make sure to hit "Save" and click to refresh the database after you update the root directory.
 

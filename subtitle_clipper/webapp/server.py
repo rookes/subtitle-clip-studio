@@ -6,6 +6,8 @@ end served from ``static/``. Requires Flask (the ``clipper`` optional extra).
 
 from __future__ import annotations
 
+import os
+import re
 import tempfile
 import threading
 import zipfile
@@ -14,7 +16,15 @@ from pathlib import Path
 
 from .. import audio, datasets
 from ..clips import DEFAULT_PAD_S, ClipRequest, CueEntry, generate, media_status_for
-from ..corpus import Corpus, list_dir, load_episodes, match_videos_in_directory, media_abspath
+from ..corpus import (
+    Corpus,
+    browsable_file,
+    list_dir,
+    list_roots,
+    load_episodes,
+    match_videos_in_directory,
+    media_abspath,
+)
 from ..ffmpeg import BurnStyle, NormSpec, ffmpeg_available, preview
 from ..search import Match, _cued, search
 from ..settings import (
@@ -258,16 +268,31 @@ def create_app(config_dir: Path | str, out_dir: Path | str = "clips"):
         exts_arg = request.args.get("exts", "")
         exts = tuple(e.strip().lower() for e in exts_arg.split(",") if e.strip()) or None
         raw_path = request.args.get("path", "")
+        # Drive/home shortcuts travel with every listing: the ``..`` chain dead-ends
+        # at a drive root, so they're the only way to cross to another drive.
+        roots = list_roots()
+        picked_file = None
         if raw_path:
-            path = Path(raw_path)
+            path = _browse_path(raw_path)
+            # A typed or pasted path naming a file lands in its folder, and is
+            # reported back as ``file`` so the client can take it as the pick
+            # directly — but only if the picker would have listed it at all.
+            if path.is_file():
+                if browsable_file(path, videos_only=videos_only, exts=exts):
+                    picked_file = str(path)
+                path = path.parent
         else:
             corpus = state._corpus or state.corpus(ai=False)
             # Picking a subtitle/bookmarks file starts in the subtitle tree;
             # picking a video starts in the media tree.
             path = corpus.corpus_root if exts else (corpus.media_root or corpus.corpus_root)
         if not path.is_dir():
-            return jsonify(error="not a directory", path=str(path)), 404
+            return jsonify(error="no such folder", path=str(path), roots=roots), 404
+        parent = path.parent
         return jsonify(path=str(path),
+                       parent=str(parent) if parent != path else None,
+                       roots=roots,
+                       file=picked_file,
                        entries=list_dir(path, videos_only=videos_only, exts=exts))
 
     @app.get("/api/dataset")
@@ -513,6 +538,24 @@ def _highlights(raw) -> tuple[tuple[int, int], ...]:
         except (TypeError, ValueError, IndexError, KeyError):
             continue
     return tuple(out)
+
+
+_RE_BARE_DRIVE = re.compile(r"[A-Za-z]:")
+
+
+def _browse_path(raw: str) -> Path:
+    """Turn a hand-typed browse path into something listable.
+
+    Typed paths arrive in whatever shape the user's shell or file manager hands
+    out, so: surrounding quotes (Windows' "Copy as path" adds them) are dropped,
+    ``~`` and ``%VAR%``/``$VAR`` are expanded, and a bare drive letter is
+    completed to that drive's root — ``E:`` alone means "the current directory
+    on E:", which is not what anyone typing it into a folder box intends.
+    """
+    text = os.path.expandvars(raw.strip().strip('"'))
+    if _RE_BARE_DRIVE.fullmatch(text):
+        text += os.sep
+    return Path(text).expanduser()
 
 
 def _int_or(value, default: int) -> int:

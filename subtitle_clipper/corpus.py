@@ -15,7 +15,8 @@ Two paths to episode records:
 
 from __future__ import annotations
 
-import re
+import os
+import string
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -28,11 +29,17 @@ from .config import (
 from .manifest import (
     MEDIA_EXTENSIONS,
     EpisodeRecord,
+    absolute_episode_start,
     combined_season_episode_index,
     detect_source_from_path,
+    episode_candidates,
+    index_media_by_episode,
     load_manifest,
     pair_media,
+    pick_same_rip,
+    prefer_shallowest,
     scan_corpus,
+    season_offset_index,
 )
 
 # Media containers that actually carry a video stream. MEDIA_EXTENSIONS also
@@ -174,12 +181,8 @@ def list_dir(path: Path, *, videos_only: bool = False,
         return entries
 
     dirs = [p for p in children if p.is_dir()]
-    files = [p for p in children if p.is_file()]
-    if videos_only:
-        files = [p for p in files if p.suffix.lower() in VIDEO_EXTENSIONS]
-    if exts:
-        low = tuple(e.lower() for e in exts)
-        files = [p for p in files if p.name.lower().endswith(low)]
+    files = [p for p in children if p.is_file()
+             and browsable_file(p, videos_only=videos_only, exts=exts)]
 
     for p in dirs:
         entries.append({"name": p.name, "path": str(p), "is_dir": True})
@@ -188,33 +191,60 @@ def list_dir(path: Path, *, videos_only: bool = False,
     return entries
 
 
-# Mirrors manifest._RE_SEASON_EPISODE / _index_media's approach (private helpers
-# in that module) so a picked directory can be re-paired to episodes without
-# reaching into another module's internals.
-_RE_SEASON_EPISODE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,4})")
-_RE_EPISODE_ONLY = re.compile(r"(?<![A-Za-z0-9])(?:E[Pp]?\s*)?(\d{1,4})(?![A-Za-z0-9])")
-_RE_NXM = re.compile(r"(\d+)x(\d+)")
+def browsable_file(path: Path, *, videos_only: bool = False,
+                   exts: tuple[str, ...] | None = None) -> bool:
+    """Whether ``path`` passes the file filter :func:`list_dir` applies.
+
+    Split out so a hand-typed file path can be validated against the same rule
+    that decides whether the picker would have listed it.
+    """
+    if videos_only and path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return False
+    if exts and not path.name.lower().endswith(tuple(e.lower() for e in exts)):
+        return False
+    return True
 
 
-def _index_videos_by_episode(directory: Path) -> dict[tuple[int | None, int], list[Path]]:
-    index: dict[tuple[int | None, int], list[Path]] = {}
-    for f in directory.rglob("*"):
-        if not f.is_file() or f.suffix.lower() not in VIDEO_EXTENSIONS:
-            continue
-        season = episode = None
-        m = _RE_SEASON_EPISODE.search(f.name)
-        if m:
-            season, episode = int(m.group(1)), int(m.group(2))
-        else:
-            m3 = _RE_NXM.search(f.name)
-            m2 = _RE_EPISODE_ONLY.search(f.stem)
-            if m3:
-                season, episode = int(m3.group(1)), int(m3.group(2))
-            elif m2:
-                episode = int(m2.group(1))
-        if episode is not None:
-            index.setdefault((season, episode), []).append(f)
-    return index
+def list_roots() -> list[dict]:
+    """Filesystem roots to offer as jump targets in the browse modal.
+
+    :func:`list_dir`'s ``..`` entry stops at a drive root, so on Windows a
+    browse that starts under ``C:\\`` can never walk across to ``E:\\``. These
+    are the shortcuts that make other drives (and the home directory)
+    reachable. Only roots that currently resolve to a readable directory are
+    returned, so unmounted letters don't show up.
+    """
+    roots: list[dict] = []
+    seen: set[str] = set()
+
+    def add(path: Path, name: str) -> None:
+        try:
+            if not path.is_dir():
+                return
+        except OSError:      # unreadable/disconnected mount
+            return
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append({"name": name, "path": str(path)})
+
+    for p in _filesystem_roots():
+        add(p, str(p))
+    add(Path.home(), "Home")
+    return roots
+
+
+def _filesystem_roots() -> list[Path]:
+    """Candidate root directories for this platform (mounted drives on Windows)."""
+    if os.name != "nt":
+        return [Path("/")]
+    listdrives = getattr(os, "listdrives", None)     # Python 3.12+
+    if listdrives is not None:
+        try:
+            return [Path(d) for d in listdrives()]
+        except OSError:
+            pass
+    return [Path(f"{letter}:\\") for letter in string.ascii_uppercase]
 
 
 def match_videos_in_directory(
@@ -233,14 +263,18 @@ def match_videos_in_directory(
     ``… - Netflix``), the file whose name/folder source matches the item's
     ``source`` wins. A plain ``S1`` / ``Season 1`` folder (no version tag) still
     matches by default, since it's the only candidate.
+
+    Season folders are binding: a file inside ``S1`` is only ever offered for
+    season 1, so a season with no video under the picked directory comes back
+    unlinked instead of borrowing another season's episode of the same number.
     """
     directory = Path(directory)
     if not directory.is_dir():
         return {it["episode_id"]: None for it in items}
 
-    index = _index_videos_by_episode(directory)
     all_videos = [p for p in directory.rglob("*")
                   if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS]
+    index = index_media_by_episode(all_videos, directory)
 
     result: dict[str, str | None] = {}
     # Pass 1: ordinary matching; movies pair to the lone video. Track which
@@ -254,23 +288,30 @@ def match_videos_in_directory(
             result[it["episode_id"]] = str(all_videos[0]) if len(all_videos) == 1 else None
             continue
         season = it.get("season")
-        candidates = index.get((season, episodes[0])) or index.get((None, episodes[0])) or []
+        candidates = episode_candidates(index, season, episodes[0])
         candidates_by_id[it["episode_id"]] = candidates
         episode_items.append(it)
         if candidates:
             seasons_with_match.add(season)
 
-    # Pass 2: combined SxxEyy-as-one-number (101.mkv -> S1E1) for a season that
-    # matched nothing normally.
+    # Pass 2: combined SxxEyy-as-one-number (101.mkv -> S1E1), then
+    # series-absolute numbering inside a season folder (S3/38.mkv -> S3E01), for
+    # a season that matched nothing normally.
     combined: dict[tuple[int, int], list[Path]] | None = None
+    offsets: dict[int, dict[int, list[Path]]] = {}
+    lengths = _item_season_lengths(items)
     for it in episode_items:
         season = it.get("season")
         if candidates_by_id[it["episode_id"]] or season is None \
                 or season in seasons_with_match:
             continue
+        episode = (it.get("episodes") or [0])[0]
         if combined is None:
             combined = combined_season_episode_index(all_videos)
-        hit = combined.get((season, (it.get("episodes") or [0])[0]))
+        if season not in offsets:
+            offsets[season] = season_offset_index(
+                index, season, absolute_episode_start(season, lengths))
+        hit = combined.get((season, episode)) or offsets[season].get(episode)
         if hit:
             candidates_by_id[it["episode_id"]] = hit
 
@@ -280,17 +321,34 @@ def match_videos_in_directory(
     return result
 
 
+def _item_season_lengths(items: list[dict]) -> dict[int, int]:
+    """Highest episode number the loaded results hold for each season."""
+    lengths: dict[int, int] = {}
+    for it in items:
+        season, episodes = it.get("season"), it.get("episodes") or []
+        if season is not None and episodes:
+            lengths[season] = max(lengths.get(season, 0), episodes[-1])
+    return lengths
+
+
 def _pick_video(candidates: list[Path], source: str | None) -> Path | None:
     """Choose one video for an episode from possibly several versions.
 
-    One candidate → take it. Several → prefer the one whose filename/folder
-    source matches ``source``; if that's unique, use it, otherwise fall back to
-    a single version-less (generic-folder) candidate. Still ambiguous → None.
+    Copies filed deeper than the shallowest candidate are dropped first (a
+    ``downmix/`` sub-folder holds alternates, not versions), then one rip
+    wrapped in several containers collapses to its best container. What's left
+    are real versions: prefer the one whose filename/folder source matches
+    ``source``; if that's unique, use it, otherwise fall back to a single
+    version-less (generic-folder) candidate. Still ambiguous → None.
     """
+    candidates = prefer_shallowest(candidates)
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
         return None
+    same_rip = pick_same_rip(candidates)
+    if same_rip is not None:
+        return same_rip
     if source:
         matched = [c for c in candidates if detect_source_from_path(c) == source]
         if len(matched) == 1:
