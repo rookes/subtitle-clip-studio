@@ -20,7 +20,15 @@ from pathlib import Path
 
 from . import audio
 from .corpus import media_abspath, media_status
-from .ffmpeg import BurnStyle, NormSpec, burn_subtitles, concat, cut_segment, mux_subtitles
+from .ffmpeg import (
+    BurnStyle,
+    NormSpec,
+    burn_subtitles,
+    concat,
+    cut_segment,
+    mux_subtitles,
+    probe_duration,
+)
 from .search import Match
 
 DEFAULT_PAD_S = 0.5
@@ -79,6 +87,10 @@ class SegmentPlan:
     win_start: float
     win_end: float
     cues: list[CueEntry]
+    # The segment file's real encoded duration, measured after cutting. Falls
+    # back to the nominal win_end - win_start when unknown (e.g. in tests that
+    # stub out the actual ffmpeg cut).
+    duration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -189,7 +201,8 @@ def build_combined_srt(segments: list[SegmentPlan]) -> tuple[str, float]:
     offset = 0.0
     n = 0
     for seg in segments:
-        clip_dur = max(0.0, seg.win_end - seg.win_start)
+        nominal_dur = max(0.0, seg.win_end - seg.win_start)
+        clip_dur = seg.duration if seg.duration is not None else nominal_dur
         for cue in seg.cues:
             local_start = max(0.0, cue.start - seg.win_start)
             local_end = min(clip_dur, cue.end - seg.win_start)
@@ -272,7 +285,9 @@ def generate(
                 [CueEntry(m.start, m.end, m.text, item.target_highlights), *item.extra_cues],
                 key=lambda c: c.start,
             )
-            segments.append((SegmentPlan(win_start, win_end, cues), seg_file))
+            segments.append(
+                (SegmentPlan(win_start, win_end, cues, duration=probe_duration(seg_file)), seg_file)
+            )
             report.included.append(m)
 
         if separate:

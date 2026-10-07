@@ -7,6 +7,7 @@ subtitle muxing / burn-in, and browser-playable previews.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -77,6 +78,31 @@ def cut_segment_cmd(
         "-video_track_timescale", "90000",
         str(out),
     ]
+
+
+def probe_duration_cmd(path: Path) -> list[str]:
+    return [
+        "ffprobe", "-v", "quiet",
+        "-print_format", "json", "-show_entries", "format=duration",
+        str(path),
+    ]
+
+
+def probe_duration(path: Path) -> float | None:
+    """Return *path*'s real container duration in seconds, or ``None``.
+
+    ``cut_segment``'s requested ``-t`` window is a request, not a guarantee:
+    frame-rate normalization and codec frame-size quantization can nudge the
+    encoded clip's actual duration away from the nominal one by a fraction of
+    a frame. Concatenating many such clips while assuming the nominal
+    duration accumulates that per-clip error, so callers stitching a
+    timeline must measure the real output instead of trusting the request.
+    """
+    try:
+        proc = subprocess.run(probe_duration_cmd(path), capture_output=True, check=False)
+        return float(json.loads(proc.stdout)["format"]["duration"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
 
 
 def concat_cmd(list_file: Path, out: Path) -> list[str]:

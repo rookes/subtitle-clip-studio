@@ -44,6 +44,22 @@ def test_build_combined_srt_offsets_and_clamp():
     assert "第一" in text and "第二" in text
 
 
+def test_build_combined_srt_uses_measured_duration_over_nominal_window():
+    # If the real encoded clip runs long/short of the requested win_end -
+    # win_start (ffmpeg frame-rate normalization rounding, codec frame-size
+    # quantization, ...), the stitched timeline must track the measured
+    # duration -- otherwise every following segment's offset drifts, and
+    # with enough segments subtitles end up overlapping the previous clip.
+    segments = [
+        SegmentPlan(win_start=0.0, win_end=3.0, cues=[], duration=3.2),
+        SegmentPlan(win_start=0.0, win_end=2.0, cues=[CueEntry(0.5, 1.0, "next")]),
+    ]
+    text, total = build_combined_srt(segments)
+    # second segment's offset is the first's *measured* 3.2s, not its nominal 3.0s
+    assert "00:00:03,700 --> 00:00:04,200" in text
+    assert total == 5.2
+
+
 def test_build_combined_srt_multiple_cues_share_one_offset():
     segments = [
         SegmentPlan(win_start=0.0, win_end=5.0, cues=[
